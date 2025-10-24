@@ -2,6 +2,9 @@
 
 set -e
 
+# Script version for cache-busting
+SCRIPT_VERSION="$(date +%Y%m%d%H%M%S)"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -21,11 +24,11 @@ GROUP="root"
 GITHUB_REPO="nhattuanbl/mariadb-backup-tool"
 GITHUB_URL="https://github.com/${GITHUB_REPO}"
 
-# Download version.txt from repository or use fallback
+# Download version.txt from repository or use fallback (with cache-busting)
 if command -v curl >/dev/null 2>&1; then
-    APP_VERSION=$(curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/master/version.txt 2>/dev/null || echo "1.0.1")
+    APP_VERSION=$(curl -fsSL -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/${GITHUB_REPO}/master/version.txt?t=${SCRIPT_VERSION}" 2>/dev/null || echo "1.0.1")
 elif command -v wget >/dev/null 2>&1; then
-    APP_VERSION=$(wget -qO- https://raw.githubusercontent.com/${GITHUB_REPO}/master/version.txt 2>/dev/null || echo "1.0.1")
+    APP_VERSION=$(wget -qO- --no-cache "https://raw.githubusercontent.com/${GITHUB_REPO}/master/version.txt?t=${SCRIPT_VERSION}" 2>/dev/null || echo "1.0.1")
 else
     APP_VERSION="1.0.1"
 fi
@@ -44,6 +47,16 @@ print_warning() {
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+show_installer_info() {
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}MariaDB Backup Tool Installer${NC}"
+    echo -e "${BLUE}Installer Version: ${SCRIPT_VERSION}${NC}"
+    echo -e "${BLUE}Target App Version: ${APP_VERSION}${NC}"
+    echo -e "${BLUE}Repository: ${GITHUB_URL}${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
 }
 
 check_root() {
@@ -433,9 +446,7 @@ show_summary() {
 }
 
 main() {
-    echo "MariaDB Backup Tool Installation Script"
-    echo "======================================="
-    echo
+    show_installer_info
     
     check_root
     detect_system
