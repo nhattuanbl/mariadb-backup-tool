@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗄️</text></svg>">
+</head>
+<body>
+    <div class="app-container full-page">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <img src="/static/images/bart-icon.svg" alt="Bart Simpson" class="nav-icon">
+                <h1>MariaDB Backup Tool</h1>
+            </div>
+            <div class="nav-menu">
+                <a href="/dashboard" class="nav-link">Dashboard</a>
+                <a href="/backup" class="nav-link">Backup</a>
+                <a href="/settings" class="nav-link active">Settings</a>
+                <a href="/logout" class="nav-link logout">Logout</a>
+            </div>
+        </nav>
+
+        <main class="main-content full-width">
+            <div class="page-header">
+                <div class="page-header-content">
+                    <div class="page-header-text">
+                        <h2>Settings</h2>
+                        <p>{{.ConfigPath}}</p>
+                    </div>
+                    <div class="page-header-actions">
+                        <button type="button" id="saveSettings" class="btn btn-primary">Save Settings</button>
+                        <button type="button" id="resetSettings" class="btn btn-secondary">Reset</button>
+                    </div>
+                </div>
+            </div>
+
+            {{if .saved}}
+            <div class="alert alert-success">
+                <span class="alert-icon">✅</span>
+                <span>Settings saved successfully!</span>
+            </div>
+            {{end}}
+
+            <form method="POST" action="/settings" class="settings-form" id="settingsForm">
+                <div class="settings-grid">
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h3 style="border: none;">🔗 Database Configuration</h3>
+                            <button type="button" id="testConnectionBtn" class="test-connection-btn" title="Test MySQL/MariaDB Connection">
+                                <span class="test-icon">🔗</span>
+                                <span class="test-text">Test Connection</span>
+                            </button>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="db_host">MySQL Host</label>
+                            <input type="text" id="db_host" name="db_host"
+                                   value="{{.Config.Database.Host}}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="db_port">Port</label>
+                            <input type="number" id="db_port" name="db_port"
+                                   value="{{.Config.Database.Port}}" min="1" max="65535"
+                                   placeholder="Leave empty for socket connection">
+                            <small class="form-help">Leave empty to use Unix socket connection</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="db_username">Username</label>
+                            <input type="text" id="db_username" name="db_username"
+                                   value="{{.Config.Database.Username}}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="db_password">Password</label>
+                            <input type="password" id="db_password" name="db_password"
+                                   value="{{.Config.Database.Password}}" placeholder="Leave empty if no password">
+                            <small class="form-help">Leave empty if MySQL user has no password (no -p flag will be used)</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="db_socket">Unix Socket Path</label>
+                            <input type="text" id="db_socket" name="db_socket"
+                                   value="{{.Config.Database.Socket}}"
+                                   placeholder="/var/run/mysqld/mysqld.sock">
+                            <small class="form-help">Required when port is empty for socket connection</small>
+                        </div>
+
+
+                    </div>
+
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h3 style="border: none;">🛠️ Binary Configuration</h3>
+                            <div class="button-group">
+                                <button type="button" id="detectBinaryBtn" class="test-connection-btn" title="Auto-detect Binary Paths">
+                                    <span class="test-icon">🔍</span>
+                                    <span class="test-text">Detect</span>
+                                </button>
+                                <button type="button" id="validateBinaryBtn" class="test-connection-btn" title="Validate Binary Files and Binlog Settings">
+                                    <span class="test-icon">✅</span>
+                                    <span class="test-text">Validate</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="binary_dump">mysqldump Path</label>
+                            <input type="text" id="binary_dump" name="binary_dump"
+                                   value="{{.Config.Database.BinaryDump}}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="binary_check">mysqlcheck Path</label>
+                            <input type="text" id="binary_check" name="binary_check"
+                                   value="{{.Config.Database.BinaryCheck}}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="binary_binlog">mysqlbinlog Path</label>
+                            <input type="text" id="binary_binlog" name="binary_binlog"
+                                   value="{{.Config.Database.BinaryBinLog}}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="binlog_path">Binary Log Path Pattern</label>
+                            <div class="input-with-button">
+                                <input type="text" id="binlog_path" name="binlog_path"
+                                       value="" disabled readonly
+                                       placeholder="Will be populated from database">
+                            </div>
+                            <small class="form-help">Current binary log base path from database</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="binlog_format">Current Binary Log Format</label>
+                            <input type="text" id="binlog_format" name="binlog_format" disabled readonly
+                                   value="">
+                            <small class="form-help">STATEMENT format is required for incremental backups</small>
+                        </div>
+                    </div>
+
+                    <div class="settings-section backup-section-expanded">
+                        <h3>💾 Backup Configuration</h3>
+
+                        <div class="backup-columns">
+                            <div class="backup-column">
+                                <div class="form-group">
+                                    <label for="backup_dir">Backup Directory</label>
+                                    <input type="text" id="backup_dir" name="backup_dir"
+                                           value="{{.Config.Backup.BackupDir}}" required>
+                                    <small class="form-help">Directory where backup files will be stored</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="retention_backups">Retention (Days)</label>
+                                    <input type="number" id="retention_backups" name="retention_backups"
+                                           value="{{.Config.Backup.RetentionBackups}}" min="1" max="365" required>
+                                    <small class="form-help">How long to keep backup files</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="full_backup_interval">Full Backup Interval (Days)</label>
+                                    <input type="number" id="full_backup_interval" name="full_backup_interval"
+                                           value="{{.Config.Backup.FullBackupInterval}}" min="1" max="30" required>
+                                    <small class="form-help">How often to perform full backups</small>
+                                </div>
+
+                                <div class="form-group" style="display: flex; gap: 20px;">
+                                    <div class="col">
+                                        <label for="backup_interval_hours">Backup Interval (Hours)</label>
+                                        <input type="number" id="backup_interval_hours" name="backup_interval_hours"
+                                            value="{{.Config.Backup.BackupIntervalHours}}" min="1" max="24" required>
+                                        <small class="form-help">How often to run backups (multiple times per day) - 0 to disable</small>
+                                    </div>
+                                    <div class="col">
+                                        <label for="backup_start_time">Start Time</label>
+                                        <input type="time" id="backup_start_time" name="backup_start_time"
+                                               value="{{.Config.Backup.BackupStartTime}}" required>
+                                        <small class="form-help">Time when the first backup should start (e.g., 09:00 for 9 AM)</small>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="default_backup_mode">Default Backup Mode</label>
+                                    <select id="default_backup_mode" name="default_backup_mode">
+                                        <option value="auto" {{if eq .Config.Backup.DefaultBackupMode "auto"}}selected{{end}}>Auto (Smart Decision)</option>
+                                        <option value="full" {{if eq .Config.Backup.DefaultBackupMode "full"}}selected{{end}}>Full Backup</option>
+                                        <option value="incremental" {{if eq .Config.Backup.DefaultBackupMode "incremental"}}selected{{end}}>Incremental Backup</option>
+                                    </select>
+                                    <small class="form-help">Default backup mode when running scheduled backups</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="parallel">Parallel Processes</label>
+                                    <input type="number" id="parallel" name="parallel"
+                                           value="{{.Config.Backup.Parallel}}" min="1" max="16" required>
+                                    <small class="form-help">Number of parallel backup processes</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="optimize_tables" name="optimize_tables"
+                                               {{if .Config.Backup.OptimizeTables}}checked{{end}}>
+                                        <span class="checkmark"></span>
+                                        Optimize DB on Full Backup
+                                    </label>
+                                    <small class="form-help">Run database optimization during full backup process</small>
+                                </div>
+                            </div>
+
+                            <div class="backup-column">
+                                <div class="form-group">
+                                    <label for="compression_level">Compression Level (Linux only)</label>
+                                    <input type="number" id="compression_level" name="compression_level"
+                                           value="{{.Config.Backup.CompressionLevel}}" min="0" max="9" required>
+                                    <small class="form-help">0 = no compression, 9 = maximum</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="nice_level">Process Nice Level (Linux only)</label>
+                                    <input type="number" id="nice_level" name="nice_level"
+                                           value="{{.Config.Backup.NiceLevel}}" min="0" max="19" required>
+                                    <small class="form-help">Process priority (0 = highest, 19 = lowest priority)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="max_memory_threshold">Max Memory Threshold (%) (Linux only)</label>
+                                    <input type="number" id="max_memory_threshold" name="max_memory_threshold"
+                                           value="{{.Config.Backup.MaxMemoryThreshold}}" min="50" max="95" required>
+                                    <small class="form-help">MySQL service restart when this RAM percentage is reached during backup</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="max_memory_per_process">Max Memory Per Process</label>
+                                    <input type="text" id="max_memory_per_process" name="max_memory_per_process"
+                                           value="{{.Config.Backup.MaxMemoryPerProcess}}" required>
+                                    <small class="form-help">Maximum memory allocation per backup process (e.g., 256M, 1G)</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="create_table_info" name="create_table_info"
+                                               {{if .Config.Backup.CreateTableInfo}}checked{{end}}>
+                                        <span class="checkmark"></span>
+                                        Include Table Structure and Info
+                                    </label>
+                                    <small class="form-help">Include CREATE TABLE statements and table information in backup</small>
+                                </div>
+
+                                <div class="form-group">
+                                    <label for="ignore_dbs">Ignore Databases</label>
+                                    <textarea id="ignore_dbs" name="ignore_dbs" rows="5"
+                                              placeholder="information_schema&#10;performance_schema&#10;mysql&#10;sys">{{range .Config.Backup.IgnoreDbs}}{{.}}&#10;{{end}}</textarea>
+                                    <small class="form-help">One database name per line</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="backup-full-width">
+                            <div class="form-group">
+                                <label for="mysqldump_options">Dump arguments</label>
+                                <textarea id="mysqldump_options" name="mysqldump_options" rows="4"
+                                          placeholder="Enter custom mysqldump arguments...">{{.Config.Backup.MysqldumpOptions}}</textarea>
+                                <small class="form-help">Command arguments for mysqldump (auto-updated based on table structure and memory settings)</small>
+                                <div class="form-help" style="margin-top: 5px;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <button type="button" class="collapse-toggle" onclick="toggleCollapse('mysqldump-args')" style="background: none; border: none; color: #007bff; cursor: pointer; font-size: 0.85em; padding: 0;">
+                                            <span id="mysqldump-args-icon">▶</span> <strong>Useful arguments</strong>
+                                        </button>
+                                        <button type="button" onclick="resetMysqldumpArgs()" style="background: #dc3545; color: white; border: none; padding: 2px 8px; border-radius: 3px; font-size: 0.75em; cursor: pointer;">
+                                            Reset
+                                        </button>
+                                    </div>
+                                    <div id="mysqldump-args" class="collapse-content" style="display: none; margin-top: 5px; font-size: 0.85em; color: #666; line-height: 1.4;">
+                                        • <code>--quick</code> - Retrieve rows one at a time (reduces memory usage)<br>
+                                        • <code>--lock-tables=false</code> - Don't lock tables (use with single-transaction)<br>
+                                        • <code>--skip-lock-tables</code> - Skip locking tables<br>
+                                        • <code>--single-transaction</code> - Consistent snapshot using single transaction<br>
+                                        • <code>--no-autocommit</code> - Disable autocommit for each table<br>
+                                        • <code>--net_buffer_length=16k</code> - Set network buffer length<br>
+                                        • <code>--skip-triggers</code> - Don't dump triggers<br>
+                                        • <code>--skip-routines</code> - Don't dump stored procedures/functions<br>
+                                        • <code>--skip-events</code> - Don't dump events<br>
+                                        • <code>--default-character-set=utf8mb4</code> - Set character set<br>
+                                        • <code>--compact</code> - Produce more compact output<br>
+                                        • <code>--extended-insert</code> - Use multiple-row INSERT syntax<br>
+                                        • <code>--compress</code> - Compress data sent between client and server<br>
+                                        • <code>--opt</code> - Optimize for speed (same as --add-drop-table --add-locks --create-options --disable-keys --extended-insert --lock-tables=false --quick --set-charset)<br>
+                                        • <code>--hex-blob</code> - Dump binary columns in hexadecimal format<br>
+                                        • <code>--disable-keys</code> - Disable keys during dump for faster inserts<br>
+                                        • <code>--no-create-db</code> - Don't write CREATE DATABASE statements<br>
+                                        • <code>--no-create-info</code> - Don't write CREATE TABLE statements<br>
+                                        • <code>--max_allowed_packet=256M</code> - Set maximum packet size
+                                    </div>
+                                </div>
+                                <div id="mysqldump-status" class="form-help" style="color: #007bff; font-style: italic; margin-top: 5px;">
+                                    <span id="auto-update-indicator">Auto-updating based on current settings...</span>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="mariadb_check_options">Check arguments</label>
+                                <textarea id="mariadb_check_options" name="mariadb_check_options" rows="2"
+                                          placeholder="Enter mariadb-check arguments...">{{.Config.Backup.MariadbCheckOptions}}</textarea>
+                                <small class="form-help">Command arguments for mariadb-check utility</small>
+                                <div class="form-help" style="margin-top: 5px;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <button type="button" class="collapse-toggle" onclick="toggleCollapse('check-args')" style="background: none; border: none; color: #007bff; cursor: pointer; font-size: 0.85em; padding: 0;">
+                                            <span id="check-args-icon">▶</span> <strong>Useful arguments</strong>
+                                        </button>
+                                        <button type="button" onclick="resetCheckArgs()" style="background: #dc3545; color: white; border: none; padding: 2px 8px; border-radius: 3px; font-size: 0.75em; cursor: pointer;">
+                                            Reset
+                                        </button>
+                                    </div>
+                                    <div id="check-args" class="collapse-content" style="display: none; margin-top: 5px; font-size: 0.85em; color: #666; line-height: 1.4;">
+                                        • <code>--auto-repair</code> - Automatically repair corrupted tables<br>
+                                        • <code>--optimize</code> - Optimize tables after checking<br>
+                                        • <code>--check</code> - Check tables for errors (default)<br>
+                                        • <code>--analyze</code> - Analyze table key distribution<br>
+                                        • <code>--extended</code> - Perform extended table check<br>
+                                        • <code>--fast</code> - Skip tables that haven't been closed properly<br>
+                                        • <code>--medium-check</code> - Faster than extended, slower than fast<br>
+                                        • <code>--quick</code> - Don't check rows, only check table structure
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="mariadb_binlog_options">Binlog arguments</label>
+                                <textarea id="mariadb_binlog_options" name="mariadb_binlog_options" rows="2"
+                                          placeholder="Enter mariadb-binlog arguments...">{{.Config.Backup.MariadbBinlogOptions}}</textarea>
+                                <small class="form-help">Command arguments for mariadb-binlog utility (used for incremental backups)</small>
+                                <div class="form-help" style="margin-top: 5px;">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        <button type="button" class="collapse-toggle" onclick="toggleCollapse('binlog-args')" style="background: none; border: none; color: #007bff; cursor: pointer; font-size: 0.85em; padding: 0;">
+                                            <span id="binlog-args-icon">▶</span> <strong>Useful arguments</strong>
+                                        </button>
+                                        <button type="button" onclick="resetBinlogArgs()" style="background: #dc3545; color: white; border: none; padding: 2px 8px; border-radius: 3px; font-size: 0.75em; cursor: pointer;">
+                                            Reset
+                                        </button>
+                                    </div>
+                                    <div id="binlog-args" class="collapse-content" style="display: none; margin-top: 5px; font-size: 0.85em; color: #666; line-height: 1.4;">
+                                        • <code>--short-form</code> - No extra info and no row-based events<br>
+                                        • <code>--start-position=N</code> - Start reading from specific position<br>
+                                        • <code>--stop-position=N</code> - Stop reading at specific position<br>
+                                        • <code>--exclude-gtids=uuid:1-N</code> - Exclude specific GTID ranges<br>
+                                        • <code>--verbose</code> - Show more detailed output<br>
+                                        • <code>--base64-output=DECODE-ROWS</code> - Decode row events for readability<br>
+                                        • <code>--read-from-remote-server</code> - Read binlog from remote MySQL server<br>
+                                        • <code>--raw</code> - Output raw binary format (faster processing)<br>
+                                        • <code>--stop-never</code> - Keep reading until interrupted<br>
+                                        • <code>--stop-never-slave-server-id=N</code> - Set server ID for stop-never mode<br>
+                                        • <code>--to-last-log</code> - Continue reading until end of last log file
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>🌐 Web Interface</h3>
+
+                        <div class="form-group">
+                            <label for="web_port">Port</label>
+                            <input type="number" id="web_port" name="web_port"
+                                   value="{{.Config.Web.Port}}" min="1024" max="65535" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="auth_user">Username</label>
+                            <input type="text" id="auth_user" name="auth_user"
+                                   value="{{.Config.Web.AuthUser}}" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="new_password">New Password (optional)</label>
+                            <input type="password" id="new_password" name="new_password"
+                                   placeholder="Leave empty to keep current password">
+                            <small class="form-help">Enter new password only if you want to change it</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="ssl_enabled" name="ssl_enabled"
+                                       {{if .Config.Web.SSLEnabled}}checked{{end}}>
+                                <span class="checkmark"></span>
+                                Enable HTTPS (SSL)
+                            </label>
+                        </div>
+
+                        <div id="ssl-config" style="{{if not .Config.Web.SSLEnabled}}display: none;{{end}}">
+                            <div class="form-group">
+                                <label for="ssl_cert_file">SSL Certificate File</label>
+                                <input type="text" id="ssl_cert_file" name="ssl_cert_file"
+                                       value="{{.Config.Web.SSLCertFile}}" placeholder="server.crt">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="ssl_key_file">SSL Key File</label>
+                                <input type="text" id="ssl_key_file" name="ssl_key_file"
+                                       value="{{.Config.Web.SSLKeyFile}}" placeholder="server.key">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>📝 Logging</h3>
+
+                        <div id="logging-config">
+                            <div class="form-group">
+                                <label for="log_dir">Log Directory</label>
+                                <input type="text" id="log_dir" name="log_dir"
+                                       value="{{.Config.Logging.LogDir}}" required>
+                            </div>
+
+
+                            <div class="form-group">
+                                <label for="log_retention_days">Log Retention (Days)</label>
+                                <input type="number" id="log_retention_days" name="log_retention_days"
+                                       value="{{.Config.Logging.RetentionLogs}}" min="1" max="365" required>
+                                <small class="form-help">How many days to keep log files</small>
+                            </div>
+
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>🔔 Notifications</h3>
+
+                        <div class="form-group">
+                            <label for="slack_webhook">Slack Webhook URL</label>
+                            <input type="url" id="slack_webhook" name="slack_webhook"
+                                   value="{{.Config.Notification.SlackWebhookURL}}"
+                                   placeholder="https://hooks.slack.com/services/...">
+                            <small class="form-help">Backup summary will be sent to this Slack channel after each backup process completes. Leave blank to disable notifications.</small>
+                            <div id="slack-status" class="slack-status" style="margin-top: 10px;"></div>
+                        </div>
+                    </div>
+                </div>
+
+            </form>
+        </main>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <script src="/static/common.js"></script>
+    <script src="/static/settings.js"></script>
+    <script>
+        // Collapse toggle function
+        function toggleCollapse(elementId) {
+            const content = document.getElementById(elementId);
+            const icon = document.getElementById(elementId + '-icon');
+            
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                icon.textContent = '▼';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '▶';
+            }
+        }
+
+        // Reset functions for each argument type
+        function resetMysqldumpArgs() {
+            if (confirm('Reset mysqldump arguments to default?')) {
+                const element = document.getElementById('mysqldump_options');
+                element.value = '--quick --lock-tables=false --skip-lock-tables --single-transaction --no-autocommit --net_buffer_length=16k --skip-triggers --skip-routines --skip-events --default-character-set=utf8mb4 --compact --extended-insert --compress --opt --hex-blob --disable-keys --no-create-db --no-create-info --max_allowed_packet=256M';
+                showToast('mysqldump arguments reset to default', 'success');
+            }
+        }
+
+        function resetCheckArgs() {
+            if (confirm('Reset mariadb-check arguments to default?')) {
+                const element = document.getElementById('mariadb_check_options');
+                element.value = '--auto-repair --optimize';
+                showToast('mariadb-check arguments reset to default', 'success');
+            }
+        }
+
+        function resetBinlogArgs() {
+            if (confirm('Reset mariadb-binlog arguments to default?')) {
+                const element = document.getElementById('mariadb_binlog_options');
+                element.value = '--verbose --base64-output=DECODE-ROWS --short-form';
+                showToast('mariadb-binlog arguments reset to default', 'success');
+            }
+        }
+
+        // Settings page functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSettings();
+            setupEventListeners();
+        });
+
+        function setupEventListeners() {
+            // Save button
+            document.getElementById('saveSettings').addEventListener('click', function() {
+                saveSettings();
+            });
+
+            // Reset button
+            document.getElementById('resetSettings').addEventListener('click', function() {
+                if (confirm('Are you sure you want to reset all settings to default?')) {
+                    resetSettings();
+                }
+            });
+
+            // Test connection button
+            document.getElementById('testConnectionBtn').addEventListener('click', function() {
+                testConnection();
+            });
+
+            // Binary validation button
+            document.getElementById('validateBinaryBtn').addEventListener('click', function() {
+                validateBinaryConfiguration();
+            });
+
+            // SSL checkbox toggle
+            document.getElementById('ssl_enabled').addEventListener('change', function() {
+                const sslConfig = document.getElementById('ssl-config');
+                if (this.checked) {
+                    sslConfig.style.display = 'block';
+                } else {
+                    sslConfig.style.display = 'none';
+                }
+            });
+
+            // Auto-update mysqldump options based on settings
+            document.getElementById('create_table_info').addEventListener('change', function() {
+                updateMysqldumpOptions();
+            });
+
+            document.getElementById('max_memory_per_process').addEventListener('input', function() {
+                updateMysqldumpOptions();
+            });
+
+            // Initial update
+            updateMysqldumpOptions();
+        }
+    </script>
+</body>
+</html>

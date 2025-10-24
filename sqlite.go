@@ -1,0 +1,1573 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+var db *sql.DB
+
+func InitDB(dbFile string) error {
+	var err error
+	db, err = sql.Open("sqlite", dbFile)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %v", err)
+	}
+
+	// Configure connection pool for better concurrency
+	db.SetMaxOpenConns(25)   // Allow up to 25 concurrent connections
+	db.SetMaxIdleConns(10)   // Keep 10 idle connections ready
+	db.SetConnMaxLifetime(0) // Connections don't expire
+
+	// Configure SQLite for better concurrency
+	concurrencySettings := []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA journal_mode = WAL",            // WAL mode allows concurrent reads
+		"PRAGMA synchronous = NORMAL",          // Faster than FULL, still safe
+		"PRAGMA cache_size = 10000",            // Increase cache size
+		"PRAGMA temp_store = MEMORY",           // Store temp tables in memory
+		"PRAGMA busy_timeout = 30000",          // 30 second timeout for locks
+		"PRAGMA wal_autocheckpoint = 1000",     // Checkpoint every 1000 pages
+		"PRAGMA journal_size_limit = 67108864", // 64MB journal size limit
+	}
+
+	for _, setting := range concurrencySettings {
+		_, err = db.Exec(setting)
+		if err != nil {
+			return fmt.Errorf("failed to set %s: %v", setting, err)
+		}
+	}
+
+	if err := createTables(); err != nil {
+		return fmt.Errorf("failed to create tables: %v", err)
+	}
+
+	LogInfo("SQLite database initialized at %s", dbFile)
+	return nil
+}
+
+func createTables() error {
+	queries := []string{
+		`CREATE TABLE IF NOT EXISTS backup_jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id TEXT NOT NULL,
+			database_name TEXT NOT NULL,
+			backup_type TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'running',
+			progress INTEGER DEFAULT 0,
+			started_at DATETIME,
+			completed_at DATETIME,
+			estimated_size_kb INTEGER,
+			actual_size_kb INTEGER,
+			backup_file_path TEXT,
+			error_message TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS backup_summary (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id TEXT UNIQUE NOT NULL,
+			total_db_count INTEGER NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			state TEXT NOT NULL DEFAULT 'running',
+			completed_at DATETIME,
+			total_size_kb INTEGER DEFAULT 0,
+			total_disk_size INTEGER DEFAULT 0,
+			backup_mode TEXT NOT NULL,
+			total_full INTEGER DEFAULT 0,
+			total_incremental INTEGER DEFAULT 0,
+			total_failed INTEGER DEFAULT 0
+		)`,
+	}
+
+	//backup_mode (auto, full, incremental)
+	//backup_type (auto-full, auto-inc, force-full, force-inc)
+	//status (running, done, failed, cancelled, optimizing)
+
+	for _, query := range queries {
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("failed to execute query: %v", err)
+		}
+	}
+
+	return nil
+}
+
+func GetDB() *sql.DB {
+	return db
+}
+
+// Backup Jobs Functions
+func CreateBackupJob(jobID, databaseName, backupType string, estimatedSizeKB int) error {
+	query := `INSERT INTO backup_jobs (job_id, database_name, backup_type, status, progress, started_at, estimated_size_kb)
+		VALUES (?, ?, ?, 'running', 0, CURRENT_TIMESTAMP, ?)`
+
+	// Retry mechanism for database operations
+	maxRetries := 5
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		_, err := db.Exec(query, jobID, databaseName, backupType, estimatedSizeKB)
+		if err == nil {
+			return nil // Success
+		}
+
+		if attempt == maxRetries {
+			return fmt.Errorf("failed to create backup job after %d attempts: %v", maxRetries, err)
+		}
+
+		// Log retry attempt and wait before retrying
+		LogWarn("Database insert attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
+		time.Sleep(time.Duration(attempt) * 200 * time.Millisecond) // Exponential backoff
+	}
+
+	return fmt.Errorf("unexpected error in retry loop")
+}
+
+func UpdateBackupJobProgress(jobID, databaseName string, progress int) error {
+	query := `UPDATE backup_jobs SET progress = ? WHERE job_id = ? AND database_name = ?`
+
+	// Retry mechanism for database operations
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		_, err := db.Exec(query, progress, jobID, databaseName)
+		if err == nil {
+			// Broadcast job update to UI
+			go broadcastJobsUpdate()
+			return nil
+		}
+
+		if attempt == maxRetries {
+			return fmt.Errorf("failed to update progress after %d attempts: %v", maxRetries, err)
+		}
+
+		// Log retry attempt and wait before retrying
+		LogWarn("Progress update attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("unexpected error in retry loop")
+}
+
+func UpdateBackupJobStatusByDB(jobID, databaseName, status string) error {
+	var query string
+	var args []interface{}
+
+	if status == "done" || status == "failed" {
+		query = `UPDATE backup_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE job_id = ? AND database_name = ?`
+		args = []interface{}{status, jobID, databaseName}
+	} else {
+		query = `UPDATE backup_jobs SET status = ? WHERE job_id = ? AND database_name = ?`
+		args = []interface{}{status, jobID, databaseName}
+	}
+
+	// Retry mechanism for database operations
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		_, err := db.Exec(query, args...)
+		if err == nil {
+			// Broadcast job update to UI
+			go broadcastJobsUpdate()
+			return nil
+		}
+
+		if attempt == maxRetries {
+			return fmt.Errorf("failed to update status after %d attempts: %v", maxRetries, err)
+		}
+
+		// Log retry attempt and wait before retrying
+		LogWarn("Status update attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
+
+	return fmt.Errorf("unexpected error in retry loop")
+}
+
+func UpdateBackupJobError(jobID, databaseName, errorMessage string) error {
+	query := `UPDATE backup_jobs SET error_message = ? WHERE job_id = ? AND database_name = ?`
+	_, err := db.Exec(query, errorMessage, jobID, databaseName)
+	if err == nil {
+		// Broadcast job update to UI
+		go broadcastJobsUpdate()
+	}
+	return err
+}
+
+func getExistingJobError(jobID, databaseName string) string {
+	query := `SELECT error_message FROM backup_jobs WHERE job_id = ? AND database_name = ?`
+	var errorMessage sql.NullString
+	err := db.QueryRow(query, jobID, databaseName).Scan(&errorMessage)
+	if err != nil {
+		return ""
+	}
+	if errorMessage.Valid {
+		return errorMessage.String
+	}
+	return ""
+}
+
+func CompleteBackupJob(jobID, databaseName string, success bool, actualSizeKB int, backupFilePath, errorMessage string) error {
+	status := "done"
+	if !success {
+		status = "failed"
+	}
+
+	query := `UPDATE backup_jobs 
+		SET status = ?, completed_at = CURRENT_TIMESTAMP, 
+			actual_size_kb = ?, backup_file_path = ?, error_message = ?
+		WHERE job_id = ? AND database_name = ?`
+
+	// Retry mechanism for database operations
+	maxRetries := 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		result, err := db.Exec(query, status, actualSizeKB, backupFilePath, errorMessage, jobID, databaseName)
+		if err != nil {
+			if attempt == maxRetries {
+				return fmt.Errorf("failed to update backup job after %d attempts: %v", maxRetries, err)
+			}
+			// Log retry attempt and wait before retrying
+			LogWarn("Database update attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // Exponential backoff
+			continue
+		}
+
+		// Check if any rows were affected
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to get rows affected: %v", err)
+		}
+
+		if rowsAffected == 0 {
+			return fmt.Errorf("no backup job found with job_id=%s and database_name=%s", jobID, databaseName)
+		}
+
+		// Success - broadcast job update to UI
+		go broadcastJobsUpdate()
+		return nil
+	}
+
+	return fmt.Errorf("unexpected error in retry loop")
+}
+
+// GetRunningJobs returns all currently running backup jobs
+func GetRunningJobs() ([]map[string]interface{}, error) {
+	query := `SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		WHERE status = 'running'
+		ORDER BY started_at DESC`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var jobID, databaseName, backupType, status string
+		var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+		var startedAt, completedAt sql.NullString
+		var backupFilePath, errorMessage sql.NullString
+
+		err := rows.Scan(&id, &jobID, &databaseName, &backupType, &status, &progress,
+			&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		job := map[string]interface{}{
+			"id":                id,
+			"job_id":            jobID,
+			"database_name":     databaseName,
+			"backup_type":       backupType,
+			"status":            status,
+			"progress":          progress.Int64,
+			"started_at":        startedAt.String,
+			"completed_at":      completedAt.String,
+			"estimated_size_kb": estimatedSizeKB.Int64,
+			"actual_size_kb":    actualSizeKB.Int64,
+			"backup_file_path":  backupFilePath.String,
+			"error_message":     errorMessage.String,
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
+// GetActiveJobs returns all currently active backup jobs (running, optimizing, etc.)
+func GetActiveJobs() ([]map[string]interface{}, error) {
+	query := `SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		WHERE status IN ('running', 'optimizing')
+		ORDER BY started_at DESC`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var jobID, databaseName, backupType, status string
+		var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+		var startedAt, completedAt sql.NullString
+		var backupFilePath, errorMessage sql.NullString
+
+		err := rows.Scan(&id, &jobID, &databaseName, &backupType, &status, &progress,
+			&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		job := map[string]interface{}{
+			"id":                id,
+			"job_id":            jobID,
+			"database_name":     databaseName,
+			"backup_type":       backupType,
+			"status":            status,
+			"progress":          progress.Int64,
+			"started_at":        startedAt.String,
+			"completed_at":      completedAt.String,
+			"estimated_size_kb": estimatedSizeKB.Int64,
+			"actual_size_kb":    actualSizeKB.Int64,
+			"backup_file_path":  backupFilePath.String,
+			"error_message":     errorMessage.String,
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
+// UpdateBackupJobStatus updates the status of a backup job
+func UpdateBackupJobStatus(jobID, status, errorMessage string, success bool) error {
+	var query string
+	var args []interface{}
+
+	if status == "cancelled" || status == "failed" {
+		query = `UPDATE backup_jobs 
+			SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ?
+			WHERE job_id = ?`
+		args = []interface{}{status, errorMessage, jobID}
+	} else {
+		query = `UPDATE backup_jobs 
+			SET status = ?, error_message = ?
+			WHERE job_id = ?`
+		args = []interface{}{status, errorMessage, jobID}
+	}
+
+	_, err := db.Exec(query, args...)
+	return err
+}
+
+func GetBackupJobs() ([]map[string]interface{}, error) {
+	query := `SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		ORDER BY 
+			CASE 
+				WHEN status = 'running' THEN 1
+				WHEN status = 'done' THEN 2
+				WHEN status = 'failed' THEN 3
+				ELSE 4
+			END,
+			started_at DESC 
+		LIMIT 50`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var jobID, databaseName, backupType, status string
+		var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+		var startedAt, completedAt, backupFilePath, errorMessage sql.NullString
+
+		err := rows.Scan(&id, &jobID, &databaseName, &backupType, &status, &progress,
+			&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert sql.NullString to regular string
+		startedAtStr := ""
+		if startedAt.Valid {
+			startedAtStr = startedAt.String
+		}
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+		backupFilePathStr := ""
+		if backupFilePath.Valid {
+			backupFilePathStr = backupFilePath.String
+		}
+		errorMessageStr := ""
+		if errorMessage.Valid {
+			errorMessageStr = errorMessage.String
+		}
+
+		job := map[string]interface{}{
+			"id":                id,
+			"job_id":            jobID,
+			"database_name":     databaseName,
+			"backup_type":       backupType,
+			"status":            status,
+			"progress":          progress.Int64,
+			"started_at":        startedAtStr,
+			"completed_at":      completedAtStr,
+			"estimated_size_kb": estimatedSizeKB.Int64,
+			"actual_size_kb":    actualSizeKB.Int64,
+			"backup_file_path":  backupFilePathStr,
+			"error_message":     errorMessageStr,
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
+// Backup Summary Functions
+func CreateBackupSummary(jobID, backupMode string, totalDBCount int) error {
+	query := `INSERT INTO backup_summary (job_id, backup_mode, total_db_count, state)
+		VALUES (?, ?, ?, 'running')`
+
+	_, err := db.Exec(query, jobID, backupMode, totalDBCount)
+	return err
+}
+
+func UpdateBackupSummary(jobID string, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int) error {
+	query := `UPDATE backup_summary 
+		SET total_size_kb = ?, total_disk_size = ?, total_full = ?, total_incremental = ?, total_failed = ?
+		WHERE job_id = ?`
+
+	_, err := db.Exec(query, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, jobID)
+	return err
+}
+
+func CompleteBackupSummary(jobID string, cfg *Config) error {
+	query := `UPDATE backup_summary 
+		SET state = 'completed', completed_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?`
+
+	_, err := db.Exec(query, jobID)
+	if err != nil {
+		return err
+	}
+
+	// Send Slack notification if configured
+	go func() {
+		if cfg != nil && cfg.Notification.SlackWebhookURL != "" {
+			if err := SendSlackNotificationFromSummary(cfg.Notification.SlackWebhookURL, jobID); err != nil {
+				LogError("Failed to send Slack notification for job %s: %v", jobID, err)
+			}
+		}
+	}()
+
+	return nil
+}
+
+func CancelBackupSummary(jobID string) error {
+	query := `UPDATE backup_summary 
+		SET state = 'cancelled', completed_at = CURRENT_TIMESTAMP
+		WHERE job_id = ?`
+
+	_, err := db.Exec(query, jobID)
+	return err
+}
+
+func GetBackupSummaries() ([]map[string]interface{}, error) {
+	query := `SELECT job_id, total_db_count, created_at, state, completed_at, 
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		FROM backup_summary 
+		ORDER BY created_at DESC 
+		LIMIT 20`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []map[string]interface{}
+	for rows.Next() {
+		var jobID, createdAt, state, backupMode string
+		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+		var completedAt sql.NullString // Use sql.NullString for nullable column
+
+		err := rows.Scan(&jobID, &totalDBCount, &createdAt, &state, &completedAt,
+			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert sql.NullString to regular string
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+
+		summary := map[string]interface{}{
+			"job_id":            jobID,
+			"total_db_count":    totalDBCount,
+			"created_at":        createdAt,
+			"state":             state,
+			"completed_at":      completedAtStr,
+			"total_size_kb":     totalSizeKB,
+			"total_disk_size":   totalDiskSizeKB,
+			"backup_mode":       backupMode,
+			"total_full":        totalFull,
+			"total_incremental": totalIncremental,
+			"total_failed":      totalFailed,
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	return summaries, nil
+}
+
+// GetBackupSummaryByJobID gets a specific backup summary by job ID
+func GetBackupSummaryByJobID(jobID string) (map[string]interface{}, error) {
+	query := `SELECT job_id, total_db_count, created_at, state, completed_at, 
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		FROM backup_summary 
+		WHERE job_id = ?`
+
+	var jobIDResult, createdAt, state, backupMode string
+	var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+	var completedAt sql.NullString
+
+	err := db.QueryRow(query, jobID).Scan(&jobIDResult, &totalDBCount, &createdAt, &state, &completedAt,
+		&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // Not found
+		}
+		return nil, err
+	}
+
+	// Convert sql.NullString to regular string
+	completedAtStr := ""
+	if completedAt.Valid {
+		completedAtStr = completedAt.String
+	}
+
+	summary := map[string]interface{}{
+		"job_id":            jobIDResult,
+		"total_db_count":    totalDBCount,
+		"created_at":        createdAt,
+		"state":             state,
+		"completed_at":      completedAtStr,
+		"total_size_kb":     totalSizeKB,
+		"total_disk_size":   totalDiskSizeKB,
+		"backup_mode":       backupMode,
+		"total_full":        totalFull,
+		"total_incremental": totalIncremental,
+		"total_failed":      totalFailed,
+	}
+
+	return summary, nil
+}
+
+// GetRunningJobsWithSummary returns running jobs with summary data for the running jobs card
+func GetRunningJobsWithSummary() (map[string]interface{}, error) {
+	// Get running summaries (state = 'running') AND recent completed summaries
+	summaryQuery := `SELECT job_id, total_db_count, created_at, state, completed_at, 
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		FROM backup_summary 
+		WHERE state = 'running' OR (state = 'completed' AND completed_at >= datetime('now', '-1 day'))
+		ORDER BY 
+			CASE 
+				WHEN state = 'running' THEN 1
+				WHEN state = 'completed' THEN 2
+				ELSE 3
+			END,
+			CASE 
+				WHEN state = 'running' THEN created_at
+				WHEN state = 'completed' THEN completed_at
+				ELSE created_at
+			END DESC
+		LIMIT 2`
+
+	summaryRows, err := db.Query(summaryQuery)
+	if err != nil {
+		return nil, err
+	}
+	defer summaryRows.Close()
+
+	var summaries []map[string]interface{}
+	for summaryRows.Next() {
+		var jobID, createdAt, state, backupMode string
+		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+		var completedAt sql.NullString // Use sql.NullString for nullable column
+
+		err := summaryRows.Scan(&jobID, &totalDBCount, &createdAt, &state, &completedAt,
+			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert sql.NullString to regular string
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+
+		summary := map[string]interface{}{
+			"job_id":            jobID,
+			"total_db_count":    totalDBCount,
+			"created_at":        createdAt,
+			"state":             state,
+			"completed_at":      completedAtStr,
+			"total_size_kb":     totalSizeKB,
+			"total_disk_size":   totalDiskSizeKB,
+			"backup_mode":       backupMode,
+			"total_full":        totalFull,
+			"total_incremental": totalIncremental,
+			"total_failed":      totalFailed,
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	// Get individual jobs for running summaries
+	var allJobs []map[string]interface{}
+	for _, summary := range summaries {
+		jobID := summary["job_id"].(string)
+
+		jobQuery := `SELECT id, job_id, database_name, backup_type, status, progress, 
+			started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+			FROM backup_jobs 
+			WHERE job_id = ? AND (
+				status IN ('running', 'optimizing') OR
+				id IN (
+					SELECT id FROM backup_jobs 
+					WHERE job_id = ? AND status IN ('done', 'failed')
+					ORDER BY 
+						CASE 
+							WHEN status = 'done' THEN completed_at
+							ELSE started_at
+						END DESC
+					LIMIT 5
+				)
+			)
+			ORDER BY 
+				CASE 
+					WHEN status = 'running' THEN 1
+					WHEN status = 'optimizing' THEN 2
+					WHEN status = 'done' THEN 3
+					WHEN status = 'failed' THEN 4
+					ELSE 5
+				END,
+				CASE 
+					WHEN status = 'running' THEN started_at
+					WHEN status = 'optimizing' THEN started_at
+					WHEN status = 'done' THEN completed_at
+					ELSE started_at
+				END DESC`
+
+		jobRows, err := db.Query(jobQuery, jobID, jobID)
+		if err != nil {
+			continue
+		}
+
+		for jobRows.Next() {
+			var id int
+			var jobID, databaseName, backupType, status string
+			var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+			var startedAt, completedAt, backupFilePath, errorMessage sql.NullString
+
+			err := jobRows.Scan(&id, &jobID, &databaseName, &backupType, &status, &progress,
+				&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+			if err != nil {
+				continue
+			}
+
+			// Convert sql.NullString to regular string
+			startedAtStr := ""
+			if startedAt.Valid {
+				startedAtStr = startedAt.String
+			}
+			completedAtStr := ""
+			if completedAt.Valid {
+				completedAtStr = completedAt.String
+			}
+			backupFilePathStr := ""
+			if backupFilePath.Valid {
+				backupFilePathStr = backupFilePath.String
+			}
+			errorMessageStr := ""
+			if errorMessage.Valid {
+				errorMessageStr = errorMessage.String
+			}
+
+			job := map[string]interface{}{
+				"id":                id,
+				"job_id":            jobID,
+				"database_name":     databaseName,
+				"backup_type":       backupType,
+				"status":            status,
+				"progress":          progress.Int64,
+				"started_at":        startedAtStr,
+				"completed_at":      completedAtStr,
+				"estimated_size_kb": estimatedSizeKB.Int64,
+				"actual_size_kb":    actualSizeKB.Int64,
+				"backup_file_path":  backupFilePathStr,
+				"error_message":     errorMessageStr,
+			}
+
+			allJobs = append(allJobs, job)
+		}
+		jobRows.Close()
+	}
+
+	// Calculate totals
+	totalRunning := len(summaries)
+	totalJobs := len(allJobs)
+
+	// Count completed jobs
+	completedJobs := 0
+	for _, job := range allJobs {
+		if job["status"] == "done" {
+			completedJobs++
+		}
+	}
+
+	return map[string]interface{}{
+		"summaries":      summaries,
+		"jobs":           allJobs,
+		"total_running":  totalRunning,
+		"total_jobs":     totalJobs,
+		"completed_jobs": completedJobs,
+	}, nil
+}
+
+// GetRecentActivityWithPagination returns paginated recent activity for dashboard
+func GetRecentActivityWithPagination(page, limit int) (map[string]interface{}, error) {
+	// Calculate offset
+	offset := (page - 1) * limit
+
+	// Get all summaries (not just recent ones) with pagination
+	summaryQuery := `SELECT job_id, total_db_count, created_at, state, completed_at, 
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		FROM backup_summary 
+		ORDER BY 
+			CASE 
+				WHEN state = 'running' THEN 1
+				WHEN state = 'completed' THEN 2
+				ELSE 3
+			END,
+			CASE 
+				WHEN state = 'running' THEN created_at
+				WHEN state = 'completed' THEN completed_at
+				ELSE created_at
+			END DESC
+		LIMIT ? OFFSET ?`
+
+	summaryRows, err := db.Query(summaryQuery, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer summaryRows.Close()
+
+	var summaries []map[string]interface{}
+	for summaryRows.Next() {
+		var jobID, createdAt, state, backupMode string
+		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+		var completedAt sql.NullString
+
+		err := summaryRows.Scan(&jobID, &totalDBCount, &createdAt, &state, &completedAt,
+			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert sql.NullString to regular string
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+
+		summary := map[string]interface{}{
+			"job_id":            jobID,
+			"total_db_count":    totalDBCount,
+			"created_at":        createdAt,
+			"state":             state,
+			"completed_at":      completedAtStr,
+			"total_size_kb":     totalSizeKB,
+			"total_disk_size":   totalDiskSizeKB,
+			"backup_mode":       backupMode,
+			"total_full":        totalFull,
+			"total_incremental": totalIncremental,
+			"total_failed":      totalFailed,
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	// Get total count for pagination
+	countQuery := `SELECT COUNT(*) FROM backup_summary`
+	var totalCount int
+	err = db.QueryRow(countQuery).Scan(&totalCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// Calculate pagination info
+	totalPages := (totalCount + limit - 1) / limit
+	hasNext := page < totalPages
+	hasPrev := page > 1
+
+	return map[string]interface{}{
+		"summaries": summaries,
+		"pagination": map[string]interface{}{
+			"current_page": page,
+			"total_pages":  totalPages,
+			"total_count":  totalCount,
+			"limit":        limit,
+			"has_next":     hasNext,
+			"has_prev":     hasPrev,
+		},
+	}, nil
+}
+
+func DeleteBackupJob(jobID string) error {
+	query := `DELETE FROM backup_jobs WHERE job_id = ?`
+	_, err := db.Exec(query, jobID)
+	return err
+}
+
+// ClearAllBackupHistory clears all records from backup_summary and backup_jobs tables
+func ClearAllBackupHistory() error {
+	// Start a transaction to ensure both operations succeed or fail together
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	// Clear backup_jobs table
+	_, err = tx.Exec(`DELETE FROM backup_jobs`)
+	if err != nil {
+		return fmt.Errorf("failed to clear backup_jobs: %v", err)
+	}
+
+	// Clear backup_summary table
+	_, err = tx.Exec(`DELETE FROM backup_summary`)
+	if err != nil {
+		return fmt.Errorf("failed to clear backup_summary: %v", err)
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	return nil
+}
+
+// GetBackupJobByID returns a single backup job by ID
+func GetBackupJobByID(jobID string) (map[string]interface{}, error) {
+	query := `SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		WHERE id = ?`
+
+	var id int
+	var jobIDStr, databaseName, backupType, status string
+	var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+	var startedAt, completedAt, backupFilePath, errorMessage sql.NullString
+
+	err := db.QueryRow(query, jobID).Scan(&id, &jobIDStr, &databaseName, &backupType, &status, &progress,
+		&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert sql.NullString to regular string
+	startedAtStr := ""
+	if startedAt.Valid {
+		startedAtStr = startedAt.String
+	}
+	completedAtStr := ""
+	if completedAt.Valid {
+		completedAtStr = completedAt.String
+	}
+	backupFilePathStr := ""
+	if backupFilePath.Valid {
+		backupFilePathStr = backupFilePath.String
+	}
+	errorMessageStr := ""
+	if errorMessage.Valid {
+		errorMessageStr = errorMessage.String
+	}
+
+	job := map[string]interface{}{
+		"id":                id,
+		"job_id":            jobIDStr,
+		"database_name":     databaseName,
+		"backup_type":       backupType,
+		"status":            status,
+		"progress":          progress.Int64,
+		"started_at":        startedAtStr,
+		"completed_at":      completedAtStr,
+		"estimated_size_kb": estimatedSizeKB.Int64,
+		"actual_size_kb":    actualSizeKB.Int64,
+		"backup_file_path":  backupFilePathStr,
+		"error_message":     errorMessageStr,
+	}
+
+	return job, nil
+}
+
+// GetBackupHistory returns paginated backup history with search and filtering
+func GetBackupHistory(page, limit int, search, status, date, sort, jobId string) ([]map[string]interface{}, int, error) {
+	offset := (page - 1) * limit
+
+	// Build WHERE clause
+	var whereConditions []string
+	var args []interface{}
+
+	if search != "" {
+		whereConditions = append(whereConditions, "(id LIKE ? OR job_id LIKE ? OR database_name LIKE ? OR backup_file_path LIKE ?)")
+		searchPattern := "%" + search + "%"
+		args = append(args, searchPattern, searchPattern, searchPattern, searchPattern)
+	}
+
+	if status != "" && status != "all" {
+		whereConditions = append(whereConditions, "status = ?")
+		args = append(args, status)
+	}
+
+	if date != "" {
+		whereConditions = append(whereConditions, "DATE(started_at) = ?")
+		args = append(args, date)
+	}
+
+	if jobId != "" {
+		whereConditions = append(whereConditions, "job_id = ?")
+		args = append(args, jobId)
+	}
+
+	whereClause := ""
+	if len(whereConditions) > 0 {
+		whereClause = "WHERE " + strings.Join(whereConditions, " AND ")
+	}
+
+	// Count total records
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM backup_jobs %s", whereClause)
+	var totalCount int
+	err := db.QueryRow(countQuery, args...).Scan(&totalCount)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Build ORDER BY clause
+	orderBy := "started_at DESC" // default
+	if sort != "" {
+		switch sort {
+		case "started_at_asc":
+			orderBy = "started_at ASC"
+		case "started_at_desc":
+			orderBy = "started_at DESC"
+		case "database_name_asc":
+			orderBy = "database_name ASC"
+		case "database_name_desc":
+			orderBy = "database_name DESC"
+		case "status_asc":
+			orderBy = "status ASC"
+		case "status_desc":
+			orderBy = "status DESC"
+		case "duration_asc":
+			orderBy = "CASE WHEN completed_at IS NOT NULL AND completed_at != '' THEN (julianday(completed_at) - julianday(started_at)) ELSE 999999 END ASC, started_at DESC"
+		case "duration_desc":
+			orderBy = "CASE WHEN completed_at IS NOT NULL AND completed_at != '' THEN (julianday(completed_at) - julianday(started_at)) ELSE 0 END DESC, started_at DESC"
+		case "estimated_size_kb_asc":
+			orderBy = "estimated_size_kb ASC"
+		case "estimated_size_kb_desc":
+			orderBy = "estimated_size_kb DESC"
+		case "actual_size_kb_asc":
+			orderBy = "actual_size_kb ASC"
+		case "actual_size_kb_desc":
+			orderBy = "actual_size_kb DESC"
+		}
+	}
+
+	// Get paginated records
+	query := fmt.Sprintf(`SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		%s
+		ORDER BY %s
+		LIMIT ? OFFSET ?`, whereClause, orderBy)
+
+	args = append(args, limit, offset)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var jobs []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var jobID, databaseName, backupType, status string
+		var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+		var startedAt, completedAt, backupFilePath, errorMessage sql.NullString
+
+		err := rows.Scan(&id, &jobID, &databaseName, &backupType, &status, &progress,
+			&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		// Convert sql.NullString to regular string
+		startedAtStr := ""
+		if startedAt.Valid {
+			startedAtStr = startedAt.String
+		}
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+		backupFilePathStr := ""
+		if backupFilePath.Valid {
+			backupFilePathStr = backupFilePath.String
+		}
+		errorMessageStr := ""
+		if errorMessage.Valid {
+			errorMessageStr = errorMessage.String
+		}
+
+		// Calculate duration
+		duration := ""
+		if status == "done" && completedAtStr != "" && startedAtStr != "" {
+			startTime, err1 := time.Parse("2006-01-02 15:04:05", startedAtStr)
+			endTime, err2 := time.Parse("2006-01-02 15:04:05", completedAtStr)
+			if err1 == nil && err2 == nil {
+				duration = formatDuration(endTime.Sub(startTime))
+			}
+		} else if status != "done" {
+			duration = "In Progress"
+		}
+
+		job := map[string]interface{}{
+			"id":                id,
+			"job_id":            jobID,
+			"database_name":     databaseName,
+			"backup_type":       backupType,
+			"status":            status,
+			"progress":          progress.Int64,
+			"started_at":        startedAtStr,
+			"completed_at":      completedAtStr,
+			"estimated_size_kb": estimatedSizeKB.Int64,
+			"actual_size_kb":    actualSizeKB.Int64,
+			"backup_file_path":  backupFilePathStr,
+			"error_message":     errorMessageStr,
+			"duration":          duration,
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, totalCount, nil
+}
+
+// GetDatabaseBackupGroups returns backup history for a specific database grouped by full/incremental relationships
+func GetDatabaseBackupGroups(databaseName string) ([]map[string]interface{}, error) {
+	// Get all completed backups for the database, ordered by start time (oldest first for proper grouping)
+	query := `SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		WHERE database_name = ? AND status = 'done'
+		ORDER BY started_at ASC`
+
+	rows, err := db.Query(query, databaseName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var allJobs []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var jobID, databaseName, backupType, status string
+		var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+		var startedAt, completedAt, backupFilePath, errorMessage sql.NullString
+
+		err := rows.Scan(&id, &jobID, &databaseName, &backupType, &status, &progress,
+			&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert sql.NullString to regular string
+		startedAtStr := ""
+		if startedAt.Valid {
+			startedAtStr = startedAt.String
+		}
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+		backupFilePathStr := ""
+		if backupFilePath.Valid {
+			backupFilePathStr = backupFilePath.String
+		}
+		errorMessageStr := ""
+		if errorMessage.Valid {
+			errorMessageStr = errorMessage.String
+		}
+
+		job := map[string]interface{}{
+			"id":                id,
+			"job_id":            jobID,
+			"database_name":     databaseName,
+			"backup_type":       backupType,
+			"status":            status,
+			"progress":          progress.Int64,
+			"started_at":        startedAtStr,
+			"completed_at":      completedAtStr,
+			"estimated_size_kb": estimatedSizeKB.Int64,
+			"actual_size_kb":    actualSizeKB.Int64,
+			"backup_file_path":  backupFilePathStr,
+			"error_message":     errorMessageStr,
+		}
+
+		allJobs = append(allJobs, job)
+	}
+
+	// Group backups by full/incremental relationships
+	LogInfo("Processing %d backup jobs for database %s", len(allJobs), databaseName)
+
+	var groups []map[string]interface{}
+	var currentGroup []map[string]interface{}
+
+	for i, job := range allJobs {
+		backupType := job["backup_type"].(string)
+		LogInfo("Job %d: Type=%s, ID=%v, Started=%v", i+1, backupType, job["id"], job["started_at"])
+
+		// Check if this is a full backup
+		if strings.Contains(backupType, "full") {
+			// If we have a current group, save it
+			if len(currentGroup) > 0 {
+				LogInfo("Creating group with %d backups (1 full + %d incremental)", len(currentGroup), len(currentGroup)-1)
+				groups = append(groups, map[string]interface{}{
+					"group_type":          "full_group",
+					"full_backup":         currentGroup[0],  // First item is always the full backup
+					"incremental_backups": currentGroup[1:], // Rest are incremental
+					"total_backups":       len(currentGroup),
+					"group_start_time":    currentGroup[0]["started_at"],
+				})
+			}
+			// Start new group with this full backup
+			LogInfo("Starting new group with full backup ID=%v", job["id"])
+			currentGroup = []map[string]interface{}{job}
+		} else if strings.Contains(backupType, "inc") {
+			// Add incremental backup to current group
+			currentGroup = append(currentGroup, job)
+		}
+	}
+
+	// Don't forget the last group
+	if len(currentGroup) > 0 {
+		LogInfo("Creating final group with %d backups (1 full + %d incremental)", len(currentGroup), len(currentGroup)-1)
+		groups = append(groups, map[string]interface{}{
+			"group_type":          "full_group",
+			"full_backup":         currentGroup[0],  // First item is always the full backup
+			"incremental_backups": currentGroup[1:], // Rest are incremental
+			"total_backups":       len(currentGroup),
+			"group_start_time":    currentGroup[0]["started_at"],
+		})
+	}
+
+	LogInfo("Created %d backup groups for database %s", len(groups), databaseName)
+	return groups, nil
+}
+
+// GetDatabaseBackupFiles returns backup files for a specific database from filesystem with pagination
+func GetDatabaseBackupFiles(databaseName string, config *Config, page, limit int) ([]map[string]interface{}, int, error) {
+	backupDir := filepath.Join(config.Backup.BackupDir, databaseName)
+
+	// Check if backup directory exists
+	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
+		return []map[string]interface{}{}, 0, nil // Return empty array, not error
+	}
+
+	var allFiles []map[string]interface{}
+
+	// Look for full backup files
+	fullPattern := fmt.Sprintf("full_%s_*.sql", databaseName)
+	fullMatches, err := filepath.Glob(filepath.Join(backupDir, fullPattern))
+	if err != nil {
+		LogWarn("Error searching for full backup files for %s: %v", databaseName, err)
+	} else {
+		for _, match := range fullMatches {
+			fileInfo, err := os.Stat(match)
+			if err != nil {
+				continue
+			}
+
+			fileName := filepath.Base(match)
+			fileSize := fileInfo.Size()
+
+			// Parse timestamp from filename
+			timestamp := parseTimestampFromFilename(fileName)
+
+			allFiles = append(allFiles, map[string]interface{}{
+				"file_path":   match,
+				"file_name":   fileName,
+				"file_size":   fileSize,
+				"backup_type": "full",
+				"timestamp":   timestamp,
+				"modified_at": fileInfo.ModTime(),
+			})
+		}
+	}
+
+	// Look for full .gz files
+	fullGzPattern := fmt.Sprintf("full_%s_*.gz", databaseName)
+	fullGzMatches, err := filepath.Glob(filepath.Join(backupDir, fullGzPattern))
+	if err != nil {
+		LogWarn("Error searching for compressed full backup files for %s: %v", databaseName, err)
+	} else {
+		for _, match := range fullGzMatches {
+			fileInfo, err := os.Stat(match)
+			if err != nil {
+				continue
+			}
+
+			fileName := filepath.Base(match)
+			fileSize := fileInfo.Size()
+
+			// Parse timestamp from filename
+			timestamp := parseTimestampFromFilename(fileName)
+
+			allFiles = append(allFiles, map[string]interface{}{
+				"file_path":   match,
+				"file_name":   fileName,
+				"file_size":   fileSize,
+				"backup_type": "full",
+				"timestamp":   timestamp,
+				"modified_at": fileInfo.ModTime(),
+			})
+		}
+	}
+
+	// Look for incremental backup files
+	incPattern := fmt.Sprintf("inc_%s_*.sql", databaseName)
+	incMatches, err := filepath.Glob(filepath.Join(backupDir, incPattern))
+	if err != nil {
+		LogWarn("Error searching for incremental backup files for %s: %v", databaseName, err)
+	} else {
+		for _, match := range incMatches {
+			fileInfo, err := os.Stat(match)
+			if err != nil {
+				continue
+			}
+
+			fileName := filepath.Base(match)
+			fileSize := fileInfo.Size()
+
+			// Parse timestamp from filename
+			timestamp := parseTimestampFromFilename(fileName)
+
+			allFiles = append(allFiles, map[string]interface{}{
+				"file_path":   match,
+				"file_name":   fileName,
+				"file_size":   fileSize,
+				"backup_type": "incremental",
+				"timestamp":   timestamp,
+				"modified_at": fileInfo.ModTime(),
+			})
+		}
+	}
+
+	// Look for incremental .gz files
+	incGzPattern := fmt.Sprintf("inc_%s_*.gz", databaseName)
+	incGzMatches, err := filepath.Glob(filepath.Join(backupDir, incGzPattern))
+	if err != nil {
+		LogWarn("Error searching for compressed incremental backup files for %s: %v", databaseName, err)
+	} else {
+		for _, match := range incGzMatches {
+			fileInfo, err := os.Stat(match)
+			if err != nil {
+				continue
+			}
+
+			fileName := filepath.Base(match)
+			fileSize := fileInfo.Size()
+
+			// Parse timestamp from filename
+			timestamp := parseTimestampFromFilename(fileName)
+
+			allFiles = append(allFiles, map[string]interface{}{
+				"file_path":   match,
+				"file_name":   fileName,
+				"file_size":   fileSize,
+				"backup_type": "incremental",
+				"timestamp":   timestamp,
+				"modified_at": fileInfo.ModTime(),
+			})
+		}
+	}
+
+	// Sort files by timestamp (oldest first)
+	sort.Slice(allFiles, func(i, j int) bool {
+		timeI := allFiles[i]["timestamp"].(time.Time)
+		timeJ := allFiles[j]["timestamp"].(time.Time)
+		return timeI.Before(timeJ)
+	})
+
+	// Group files by full/incremental relationships
+	var groups []map[string]interface{}
+	var currentGroup []map[string]interface{}
+
+	for _, file := range allFiles {
+		backupType := file["backup_type"].(string)
+
+		if backupType == "full" {
+			// If we have a current group, save it
+			if len(currentGroup) > 0 {
+				groups = append(groups, map[string]interface{}{
+					"group_type":          "full_group",
+					"full_backup":         currentGroup[0],  // First item is always the full backup
+					"incremental_backups": currentGroup[1:], // Rest are incremental
+					"total_backups":       len(currentGroup),
+					"group_start_time":    currentGroup[0]["timestamp"],
+				})
+			}
+			// Start new group with this full backup
+			currentGroup = []map[string]interface{}{file}
+		} else if backupType == "incremental" {
+			// Add incremental backup to current group
+			currentGroup = append(currentGroup, file)
+		}
+	}
+
+	// Don't forget the last group
+	if len(currentGroup) > 0 {
+		LogInfo("Creating final group with %d backups (1 full + %d incremental)", len(currentGroup), len(currentGroup)-1)
+		groups = append(groups, map[string]interface{}{
+			"group_type":          "full_group",
+			"full_backup":         currentGroup[0],  // First item is always the full backup
+			"incremental_backups": currentGroup[1:], // Rest are incremental
+			"total_backups":       len(currentGroup),
+			"group_start_time":    currentGroup[0]["timestamp"],
+		})
+	}
+
+	// Sort groups by newest full backup first (descending by timestamp)
+	sort.Slice(groups, func(i, j int) bool {
+		timeI := groups[i]["group_start_time"].(time.Time)
+		timeJ := groups[j]["group_start_time"].(time.Time)
+		return timeI.After(timeJ) // Newest first
+	})
+
+	// Sort incremental backups within each group by oldest first (ascending by timestamp)
+	for _, group := range groups {
+		incrementalBackups := group["incremental_backups"].([]map[string]interface{})
+		sort.Slice(incrementalBackups, func(i, j int) bool {
+			timeI := incrementalBackups[i]["timestamp"].(time.Time)
+			timeJ := incrementalBackups[j]["timestamp"].(time.Time)
+			return timeI.Before(timeJ) // Oldest first
+		})
+		group["incremental_backups"] = incrementalBackups
+	}
+
+	totalGroups := len(groups)
+
+	// Apply pagination
+	start := (page - 1) * limit
+	end := start + limit
+
+	if start >= totalGroups {
+		return []map[string]interface{}{}, totalGroups, nil
+	}
+
+	if end > totalGroups {
+		end = totalGroups
+	}
+
+	paginatedGroups := groups[start:end]
+
+	LogInfo("Created %d backup groups for database %s (showing %d-%d of %d)", len(paginatedGroups), databaseName, start+1, end, totalGroups)
+	return paginatedGroups, totalGroups, nil
+}
+
+// parseTimestampFromFilename extracts timestamp from backup filename
+func parseTimestampFromFilename(fileName string) time.Time {
+	// Remove extension
+	nameWithoutExt := strings.TrimSuffix(fileName, ".sql")
+	nameWithoutExt = strings.TrimSuffix(nameWithoutExt, ".gz")
+
+	parts := strings.Split(nameWithoutExt, "_")
+	if len(parts) >= 3 {
+		// For format: full_dbname_20251001_224620.950678 or inc_dbname_20251001_224620.950678
+		// We need the last two parts: 20251001 and 224620.950678
+		timestampStr := parts[len(parts)-2] + "_" + parts[len(parts)-1]
+
+		// Try parsing with microseconds first
+		backupTime, err := time.Parse("20060102_150405.000000", timestampStr)
+		if err != nil {
+			// Fallback to format without microseconds
+			backupTime, err = time.Parse("20060102_150405", timestampStr)
+			if err != nil {
+				LogWarn("Failed to parse timestamp from %s: %v", fileName, err)
+				return time.Time{}
+			}
+		}
+		return backupTime
+	}
+	return time.Time{}
+}
+
+// formatDuration formats a duration into human-readable format
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	} else if d < time.Hour {
+		minutes := int(d.Minutes())
+		seconds := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	} else {
+		hours := int(d.Hours())
+		minutes := int(d.Minutes()) % 60
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+}
+
+// GetBackupTimelineData returns timeline data for backup size and duration over specified days
+func GetBackupTimelineData(days int) (map[string]interface{}, error) {
+	// Calculate the start date
+	startDate := time.Now().AddDate(0, 0, -days)
+	startDateStr := startDate.Format("2006-01-02")
+
+	// Query to get daily backup data
+	query := `
+		SELECT 
+			DATE(started_at) as backup_date,
+			COUNT(*) as backup_count,
+			SUM(CASE WHEN status = 'done' THEN actual_size_kb ELSE 0 END) as total_size_kb,
+			AVG(CASE WHEN status = 'done' AND completed_at IS NOT NULL AND completed_at != '' 
+				THEN (julianday(completed_at) - julianday(started_at)) * 24 * 60 
+				ELSE NULL END) as avg_duration_minutes,
+			SUM(CASE WHEN backup_type = 'full' THEN 1 ELSE 0 END) as full_backup_count,
+			SUM(CASE WHEN backup_type = 'incremental' THEN 1 ELSE 0 END) as incremental_backup_count
+		FROM backup_jobs 
+		WHERE DATE(started_at) >= ? AND status = 'done'
+		GROUP BY DATE(started_at)
+		ORDER BY backup_date ASC
+	`
+
+	rows, err := db.Query(query, startDateStr)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var timelineData []map[string]interface{}
+	var totalSizeKB int64
+	var totalBackups int
+	var totalDurationMinutes float64
+
+	for rows.Next() {
+		var backupDate string
+		var backupCount int
+		var totalSizeKBForDay int64
+		var avgDurationMinutes sql.NullFloat64
+		var fullBackupCount int
+		var incrementalBackupCount int
+
+		err := rows.Scan(&backupDate, &backupCount, &totalSizeKBForDay, &avgDurationMinutes, &fullBackupCount, &incrementalBackupCount)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert KB to GB for display
+		sizeGB := float64(totalSizeKBForDay) / (1024 * 1024)
+
+		// Handle null duration
+		durationMinutes := 0.0
+		if avgDurationMinutes.Valid {
+			durationMinutes = avgDurationMinutes.Float64
+		}
+
+		dayData := map[string]interface{}{
+			"date":                     backupDate,
+			"backup_count":             backupCount,
+			"size_gb":                  sizeGB,
+			"duration_minutes":         durationMinutes,
+			"full_backup_count":        fullBackupCount,
+			"incremental_backup_count": incrementalBackupCount,
+		}
+
+		timelineData = append(timelineData, dayData)
+		totalSizeKB += totalSizeKBForDay
+		totalBackups += backupCount
+		totalDurationMinutes += durationMinutes * float64(backupCount)
+	}
+
+	// Calculate summary statistics
+	var avgSizeGB float64
+	var avgDurationMinutes float64
+	if totalBackups > 0 {
+		avgSizeGB = float64(totalSizeKB) / (1024 * 1024) / float64(totalBackups)
+		avgDurationMinutes = totalDurationMinutes / float64(totalBackups)
+	}
+
+	// Calculate growth rate (compare first half vs second half of period)
+	var growthRate float64
+	if len(timelineData) > 1 {
+		midPoint := len(timelineData) / 2
+		firstHalfSize := 0.0
+		secondHalfSize := 0.0
+
+		for i := 0; i < midPoint; i++ {
+			firstHalfSize += timelineData[i]["size_gb"].(float64)
+		}
+		for i := midPoint; i < len(timelineData); i++ {
+			secondHalfSize += timelineData[i]["size_gb"].(float64)
+		}
+
+		if firstHalfSize > 0 {
+			growthRate = ((secondHalfSize - firstHalfSize) / firstHalfSize) * 100
+		}
+	}
+
+	result := map[string]interface{}{
+		"timeline_data": timelineData,
+		"summary": map[string]interface{}{
+			"total_backup_size_gb":     float64(totalSizeKB) / (1024 * 1024),
+			"average_size_gb":          avgSizeGB,
+			"average_duration_minutes": avgDurationMinutes,
+			"growth_rate_percent":      growthRate,
+			"total_backups":            totalBackups,
+			"days_analyzed":            len(timelineData),
+		},
+	}
+
+	return result, nil
+}
+
+// Helper function to generate job ID based on current timestamp
+func GenerateJobID() string {
+	now := time.Now()
+	return fmt.Sprintf("%d", now.Unix()) // Unix timestamp format
+}

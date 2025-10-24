@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bo3-login-page">
+    <div class="bo3-background">
+        <div class="bo3-grid-overlay"></div>
+        <div class="bo3-particles"></div>
+    </div>
+    
+    <div class="bo3-login-container">
+        <div class="bo3-login-box">
+            <div class="bo3-header">
+                <div class="bo3-logo">
+                    <div class="bo3-logo-icon">
+                        <img src="/static/images/bart-icon.svg" alt="Logo" class="bo3-icon">
+                    </div>
+                    <h1 class="bo3-title">MariaDB Backup Tool</h1>
+                    <div class="bo3-subtitle">SECURE DATABASE MANAGEMENT</div>
+                </div>
+            </div>
+            
+            {{if .Error}}
+            <div class="bo3-alert bo3-alert-error">
+                <span class="bo3-alert-icon">⚠</span>
+                <span>{{.Error}}</span>
+            </div>
+            {{end}}
+            
+            <form method="POST" action="/login" class="bo3-login-form">
+                <div class="bo3-input-group">
+                    <label for="username" class="bo3-label">USERNAME</label>
+                    <input type="text" id="username" name="username" required 
+                           placeholder="Enter credentials" autocomplete="username" class="bo3-input">
+                    <div class="bo3-input-glow"></div>
+                </div>
+                
+                <div class="bo3-input-group">
+                    <label for="password" class="bo3-label">PASSWORD</label>
+                    <input type="password" id="password" name="password" required 
+                           placeholder="Enter password" autocomplete="current-password" class="bo3-input">
+                    <div class="bo3-input-glow"></div>
+                </div>
+                
+                <button type="submit" class="bo3-btn bo3-btn-primary">
+                    <span class="bo3-btn-text">ACCESS SYSTEM</span>
+                    <span class="bo3-btn-loader" style="display: none;">
+                        <div class="bo3-spinner"></div>
+                    </span>
+                    <div class="bo3-btn-glow"></div>
+                </button>
+            </form>
+            
+            <div class="bo3-footer">
+                <p class="bo3-footer-text">
+                    <small>Developed by <a href="https://github.com/nhattuanbl/mariadb-backup-tool" target="_blank" rel="noopener noreferrer" class="bo3-link">nhattuanbl</a></small>
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+    <script>
+        // BO3 Login form handling
+        document.querySelector('.bo3-login-form').addEventListener('submit', function(e) {
+            const btn = document.querySelector('.bo3-btn-primary');
+            const btnText = btn.querySelector('.bo3-btn-text');
+            const btnLoader = btn.querySelector('.bo3-btn-loader');
+            
+            btnText.style.display = 'none';
+            btnLoader.style.display = 'flex';
+            btn.disabled = true;
+        });
+        
+        // Auto-focus username field
+        document.getElementById('username').focus();
+        
+        // BO3 Input focus effects
+        document.querySelectorAll('.bo3-input').forEach(input => {
+            input.addEventListener('focus', function() {
+                this.parentElement.classList.add('bo3-focused');
+            });
+            
+            input.addEventListener('blur', function() {
+                this.parentElement.classList.remove('bo3-focused');
+            });
+        });
+    </script>
+</body>
+</html>

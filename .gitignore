@@ -1,0 +1,13 @@
+config.json
+.vscode
+.idea
+.claude
+.DS_Store
+mariadb-backup-tool*
+app.db
+app.db-shm
+app.db-wal
+logs/*
+backups/*
+dist/
+build/

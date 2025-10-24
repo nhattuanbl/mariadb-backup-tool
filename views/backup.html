@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container full-page">
+        <nav class="navbar">
+            <div class="nav-brand">
+                <img src="/static/images/bart-icon.svg" alt="Bart Simpson" class="nav-icon">
+                <h1>MariaDB Backup Tool</h1>
+            </div>
+            <div class="nav-menu">
+                <a href="/dashboard" class="nav-link">Dashboard</a>
+                <a href="/backup" class="nav-link active">Backup</a>
+                <a href="/settings" class="nav-link">Settings</a>
+                <a href="/logout" class="nav-link logout">Logout</a>
+            </div>
+        </nav>
+
+        <main class="main-content full-width">
+            <div class="page-header">
+                <div class="page-header-content">
+                    <div class="page-header-text">
+                        <h2>Backup Management</h2>
+                        <p>Create and manage database backups with real-time monitoring</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System Monitor -->
+            <div class="system-monitor">
+                <div class="monitor-card">
+                    <div class="monitor-header">
+                        <h3>🖥️ System Monitor</h3>
+                        <div class="monitor-status">
+                            <span class="status-dot connecting" id="monitor-status"></span>
+                            <span class="monitor-text" id="monitor-text">Connecting...</span>
+                        </div>
+                    </div>
+                    <div class="monitor-grid">
+                        <div class="monitor-item">
+                            <div class="monitor-icon">📊</div>
+                            <div class="monitor-content">
+                                <div class="monitor-label">CPU Usage</div>
+                                <div class="monitor-value" id="cpu-usage">0%</div>
+                                <div class="monitor-bar">
+                                    <div class="monitor-fill" id="cpu-fill" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="monitor-item">
+                            <div class="monitor-icon">💾</div>
+                            <div class="monitor-content">
+                                <div class="monitor-label">RAM Usage</div>
+                                <div class="monitor-value" id="ram-usage">0%</div>
+                                <div class="monitor-bar">
+                                    <div class="monitor-fill" id="ram-fill" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="monitor-item">
+                            <div class="monitor-icon">💽</div>
+                            <div class="monitor-content">
+                                <div class="monitor-label">Backup Dir Usage</div>
+                                <div class="monitor-value" id="disk-usage">0%</div>
+                                <div class="monitor-bar">
+                                    <div class="monitor-fill" id="disk-fill" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backup Controls Row -->
+            <div class="backup-controls-row">
+                <!-- Start New Backup Card -->
+                <div class="backup-card start-backup-card">
+                    <div class="card-header">
+                        <h3>🚀 Start New Backup</h3>
+                        <div class="backup-mode-selector">
+                                    <select id="backup_mode" name="backup_mode" required>
+                                        <option value="auto">🤖 Auto (Smart Selection)</option>
+                                        <option value="full">🔄 Force Full Backup</option>
+                                        <option value="incremental">⚡ Force Incremental</option>
+                                    </select>
+                                </div>
+                        <div class="database-search-box" id="databaseSearchBox" style="display: none;">
+                            <input type="text" id="databaseSearch" placeholder="🔍 Search databases..." />
+                                </div>
+                            </div>
+                    <div class="card-content">
+                        <form id="backupForm" class="backup-form">
+                            <div class="form-group">
+                                <label>Database Selection <span id="database-count" class="database-count"></span></label>
+                                <div id="database-list" class="database-list">
+                                    <p class="text-muted">Click "Load Databases" to see available databases</p>
+                                </div>
+                            </div>
+
+                            <div class="form-actions">
+                                <button type="button" id="loadDatabasesBtn" class="btn btn-secondary" disabled>
+                                    📋 Load Databases
+                                </button>
+                                <button type="button" class="btn btn-secondary" onclick="selectNoneDatabases()" disabled>
+                                    ❌ Select None
+                                </button>
+                                <button type="button" class="btn btn-success" id="startBackupBtn" onclick="startBackupAll()" disabled>
+                                    🚀 Start Backup All
+                                </button>
+                                <button type="button" class="btn btn-primary" id="backupSelectedBtn" disabled>
+                                    ⚡ Backup Selected
+                                </button>
+                                <button type="button" class="btn btn-danger" id="stopBackupBtn" disabled>
+                                    🛑 Stop All Backups
+                                </button>
+                            </div>
+                        </form>
+                </div>
+            </div>
+
+                <!-- Running Jobs Card -->
+            <div class="backup-card running-jobs-card">
+                <div class="card-header">
+                    <h3>⏳ Running Jobs</h3>
+                    <div class="job-summary">
+                        <span class="job-count" id="job-count">0/0</span>
+                            <div class="jobs-status" id="jobs-status">
+                                <span class="status-dot connecting"></span>
+                                <span class="status-text">Connecting...</span>
+                            </div>
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div id="running-jobs" class="running-jobs-layout">
+                            <div class="loading-jobs">
+                                <div class="spinner"></div>
+                                <p>Loading jobs...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Log Stream -->
+            <div class="backup-card log-stream-card">
+                <div class="card-header">
+                    <h3>📊 Log Stream</h3>
+                    <div class="stream-controls">
+                        <div class="stream-status" id="stream-status">
+                            <span class="status-dot disconnected"></span>
+                            <span id="stream-status-text">Disconnected</span>
+                        </div>
+                        <button type="button" id="pause-stream" class="btn btn-sm btn-secondary">⏸️ Pause</button>
+                        <!-- <button type="button" id="clear-logs" class="btn btn-sm btn-secondary">🧹 Clear View</button> -->
+                        <button type="button" id="delete-log-file" class="btn btn-sm btn-danger">🗑️ Clear Log</button>
+                        <!-- <button type="button" id="scroll-to-bottom" class="btn btn-sm btn-secondary">⬇️ Bottom</button> -->
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div class="log-filters">
+                        <div class="filter-row">
+                            <div class="filter-group">
+                                <label for="log-date">Date:</label>
+                                <input type="date" id="log-date" value="">
+                            </div>
+                            <div class="filter-group">
+                                <label for="log-level">Log Level:</label>
+                                <select id="log-level">
+                                    <option value="">All Levels</option>
+                                    <option value="IMPORTANT" selected>⚠️ Important (Error, Warning, Info)</option>
+                                    <option value="ERROR">🔴 Error</option>
+                                    <option value="WARN">🟡 Warning</option>
+                                    <option value="INFO">🔵 Info</option>
+                                    <option value="DEBUG">⚪ Debug</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label for="search-logs">Search:</label>
+                                <input type="text" id="search-logs" placeholder="Search in messages...">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="log-stats">
+                        <span id="log-count">0 entries</span>
+                    </div>
+
+                    <div class="log-entries" id="log-entries">
+                        <div class="log-loading">
+                            <div class="spinner"></div>
+                            <p>Connecting to log stream...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Backup History -->
+            <div class="backup-card">
+                <div class="card-header">
+                    <h3>📋 Backup History</h3>
+                    <div class="header-actions">
+                        <div class="filter-group" style="margin-top: -20px;">
+                            <label for="history-job-filter">Job ID:</label>
+                            <input type="text" id="history-job-filter" class="form-control" placeholder="Filter by Job ID" />
+                        </div>
+                        <div class="filter-group" style="margin-top: -20px;">
+                            <label for="history-status-filter">Status:</label>
+                            <select id="history-status-filter" class="form-control">
+                                <option value="all">All Status</option>
+                                <option value="done">Successful</option>
+                                <option value="failed">Failed</option>
+                                <option value="running">Running</option>
+                            </select>
+                        </div>
+                        <div class="filter-group" style="margin-top: -20px;">
+                            <label for="history-date-filter">Start Date:</label>
+                            <input type="date" id="history-date-filter" class="form-control" />
+                        </div>
+                        <div class="filter-group" style="margin-top: -20px;">
+                            <label for="history-sort">Sort by:</label>
+                            <select id="history-sort" class="form-control">
+                                <option value="started_at_desc">Start Time (Newest)</option>
+                                <option value="started_at_asc">Start Time (Oldest)</option>
+                                <option value="database_name_asc">Database (A-Z)</option>
+                                <option value="database_name_desc">Database (Z-A)</option>
+                                <option value="status_asc">Status (A-Z)</option>
+                                <option value="status_desc">Status (Z-A)</option>
+                                <option value="duration_asc">Duration (Shortest)</option>
+                                <option value="duration_desc">Duration (Longest)</option>
+                                <option value="estimated_size_kb_asc">DB Size (Smallest)</option>
+                                <option value="estimated_size_kb_desc">DB Size (Largest)</option>
+                                <option value="actual_size_kb_asc">File Size (Smallest)</option>
+                                <option value="actual_size_kb_desc">File Size (Largest)</option>
+                            </select>
+                        </div>
+                        <div class="search-box">
+                            <input type="text" id="history-search" placeholder="🔍 Search ID, Job ID, Database, or File Path..." />
+                        </div>
+                        <button type="button" id="reset-filters-btn" class="btn btn-secondary btn-sm">
+                            🔄 Reset
+                        </button>
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div class="table-container">
+                        <table class="backup-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 50px;">ID</th>
+                                    <th>Database</th>
+                                    <th style="width: 60px;">Type</th>
+                                    <th>Start Time</th>
+                                    <th style="width: 120px;">Duration</th>
+                                    <th style="width: 80px;">DB Size</th>
+                                    <th style="width: 80px;">File Size</th>
+                                    <th style="width: 200px;">Backup File Path</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backup-history-tbody">
+                                <tr>
+                                    <td colspan="8" class="text-center text-muted">Loading backup history...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    
+                    <div class="table-pagination">
+                        <button id="prevPageBtn" class="btn btn-secondary btn-sm" disabled>Previous</button>
+                        <span id="pageInfo">Page 1 of 1</span>
+                        <button id="nextPageBtn" class="btn btn-secondary btn-sm" disabled>Next</button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Job Progress Modal -->
+    <div id="progress-modal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>🔄 Backup Progress</h3>
+                <div class="header-status">
+                    <span id="connection-status" class="connection-status">Connecting...</span>
+                    <button type="button" class="modal-close" onclick="closeProgressModal()">&times;</button>
+                </div>
+            </div>
+            
+            <div class="modal-body">
+                <!-- Job Overview -->
+                <div class="progress-overview">
+                    <div class="overview-grid">
+                        <div class="overview-item">
+                            <label>Job ID:</label>
+                            <span id="job-id" class="job-id">-</span>
+                        </div>
+                        <div class="overview-item">
+                            <label>Status:</label>
+                            <span id="job-status" class="job-status">-</span>
+                        </div>
+                        <div class="overview-item">
+                            <label>Progress:</label>
+                            <span id="job-progress" class="job-progress">0%</span>
+                        </div>
+                        <div class="overview-item">
+                            <label>Current Database:</label>
+                            <span id="current-database" class="current-db">-</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Main Progress Bar -->
+                    <div class="main-progress-bar">
+                        <div id="progress-fill" class="progress-fill" style="width: 0%">
+                            <span class="progress-text" id="progress-text">0%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Statistics Grid -->
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="total-databases">0</span>
+                            <span class="stat-label">Total Databases</span>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-box success">
+                        <div class="stat-icon">✅</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="completed-databases">0</span>
+                            <span class="stat-label">Completed</span>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-box error">
+                        <div class="stat-icon">❌</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="failed-databases">0</span>
+                            <span class="stat-label">Failed</span>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-box">
+                        <div class="stat-icon">⏱️</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="start-time">-</span>
+                            <span class="stat-label">Start Time</span>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-box">
+                        <div class="stat-icon">⚡</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="backup-speed">-</span>
+                            <span class="stat-label">Speed</span>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-box">
+                        <div class="stat-icon">⏰</div>
+                        <div class="stat-content">
+                            <span class="stat-value" id="backup-eta">-</span>
+                            <span class="stat-label">ETA</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Database Progress Details -->
+                <div class="database-progress-section">
+                    <h4>📋 Database Progress</h4>
+                    <div id="database-progress" class="database-progress-list">
+                        <!-- Database progress items will be populated here -->
+                    </div>
+                </div>
+
+                <!-- Live Log Section -->
+                <div class="live-log-section">
+                    <div class="log-header">
+                        <h4>📝 Live Log</h4>
+                        <div class="log-controls">
+                            <button type="button" id="auto-scroll-toggle" class="btn btn-sm btn-secondary active">
+                                Auto Scroll
+                            </button>
+                            <button type="button" id="clear-log" class="btn btn-sm btn-secondary">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+                    <div id="live-log" class="live-log">
+                        <div class="log-line initial">Waiting for backup to start...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeProgressModal()">
+                    Close
+                </button>
+                <button type="button" id="pause-resume-btn" class="btn btn-warning" onclick="pauseResumeBackup()">
+                    Pause
+                </button>
+                <button type="button" class="btn btn-danger" onclick="cancelBackupJob()">
+                    Cancel Job
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Database Backup History Modal -->
+    <div id="backup-history-modal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3 id="backup-history-title">📊 Backup History</h3>
+                <div class="header-controls">
+                    <select id="limit-dropdown" class="form-control limit-dropdown">
+                        <option value="5">5 per page</option>
+                        <option value="10" selected>10 per page</option>
+                        <option value="15">15 per page</option>
+                        <option value="20">20 per page</option>
+                        <option value="25">25 per page</option>
+                        <option value="50">50 per page</option>
+                    </select>
+                    <button type="button" class="modal-close" onclick="closeBackupHistoryModal()">&times;</button>
+                </div>
+            </div>
+            
+            <div class="modal-body">
+                <div id="backup-history-content">
+                    <div class="loading-spinner">
+                        <div class="spinner"></div>
+                        <p>Loading backup history...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal-footer">
+                <div class="pagination-controls">
+                    <button type="button" class="btn btn-sm btn-secondary" id="prev-page-btn" disabled>
+                        ← Previous
+                    </button>
+                    <div class="pagination-info">
+                        <span id="backup-count-text">Loading...</span>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-secondary" id="next-page-btn" disabled>
+                        Next →
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/common.js"></script>
+    <script src="/static/ws.js"></script>
+    <script src="/static/backup.js"></script>
+    <script src="/static/logs.js"></script>
+    <script src="/static/history.js"></script>
+    <script>
+        // Load databases when button clicked
+        document.getElementById('loadDatabasesBtn').addEventListener('click', function() {
+            loadAvailableDatabases();
+        });
+
+        // Backup selected databases
+        document.getElementById('backupSelectedBtn').addEventListener('click', function() {
+            startBackupSelected();
+        });
+
+        // Stop all backups
+        document.getElementById('stopBackupBtn').addEventListener('click', function() {
+            stopAllBackups();
+        });
+
+        // Load data on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            checkTestResults();
+            handleURLParameters(); // Handle URL parameters for filtering
+            
+            // Initialize log stream with a small delay to ensure all scripts are loaded
+            setTimeout(function() {
+                if (typeof initLogStream === 'function') {
+                    initLogStream();
+                    } else {
+                    console.error('initLogStream function not found');
+                }
+            }, 100);
+            
+            initBackupHistory();
+        });
+    </script>
+</body>
+</html>

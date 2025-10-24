@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container full-page">
+        <!-- Navigation -->
+        <nav class="navbar">
+            <div class="nav-brand">
+                <img src="/static/images/bart-icon.svg" alt="Bart Simpson" class="nav-icon">
+                <h1>MariaDB Backup Tool</h1>
+            </div>
+            <div class="nav-menu">
+                <a href="/dashboard" class="nav-link active">Dashboard</a>
+                <a href="/backup" class="nav-link">Backup</a>
+                <a href="/settings" class="nav-link">Settings</a>
+                <a href="/logout" class="nav-link logout">Logout</a>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content full-width">
+            <div class="page-header">
+                <div class="page-header-content">
+                    <div class="page-header-text">
+                        <h2>Dashboard</h2>
+                        <p>Comprehensive backup system overview and metrics</p>
+                    </div>
+                    <div class="dashboard-actions">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Primary Metrics -->
+            <div class="metrics-section">
+                <div class="metrics-header">
+                    <h3>📊 Backup Metrics</h3>
+                </div>
+
+                <div class="primary-stats-grid">
+                    <div class="primary-stat-card databases">
+                        <div class="stat-header">
+                            <div class="stat-icon">🗄️</div>
+                            <div class="stat-title">Database Count</div>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-value" id="total-databases">0</div>
+                            <div class="stat-label">Per Backup Run</div>
+                        </div>
+                        <div class="stat-trend" id="db-trend">
+                            <span class="trend-indicator">+0</span>
+                            <span class="trend-label">vs last period</span>
+                        </div>
+                        <div class="stat-sub-metric">
+                            <span class="sub-metric-label">Average per Run:</span>
+                            <span class="sub-metric-value" id="avg-backup-size">0 GB</span>
+                        </div>
+                    </div>
+
+                    <div class="primary-stat-card schedule">
+                        <div class="stat-header">
+                            <div class="stat-icon">⏰</div>
+                            <div class="stat-title">Backup Schedule</div>
+                        </div>
+                        <div class="stat-content">
+                            <div class="schedule-info">
+                                <div class="schedule-item">
+                                    <span class="schedule-label">Status:</span>
+                                    <span class="schedule-value" id="scheduler-status">
+                                        <span class="status-indicator" id="scheduler-indicator">●</span>
+                                        <span id="scheduler-status-text">Checking...</span>
+                                    </span>
+                                </div>
+                                <div class="schedule-item">
+                                    <span class="schedule-label">Last Run:</span>
+                                    <span class="schedule-value" id="last-run-time">Never</span>
+                                </div>
+                                <div class="schedule-item">
+                                    <span class="schedule-label">Next Run:</span>
+                                    <span class="schedule-value" id="next-run-time">Calculating...</span>
+                                </div>
+                                <div class="schedule-item">
+                                    <span class="schedule-label">Mode:</span>
+                                    <span class="schedule-value" id="schedule-mode">Auto</span>
+                                </div>
+                            </div>
+                            <div class="schedule-actions">
+                                <button class="btn btn-primary btn-sm" id="backup-now-btn" onclick="startScheduledBackup()">
+                                    <span class="btn-icon">🚀</span>
+                                    Backup Now
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="primary-stat-card storage">
+                        <div class="stat-header">
+                            <div class="stat-icon">💾</div>
+                            <div class="stat-title">Machine Disk Usage</div>
+                        </div>
+                        <div class="stat-content">
+                            <div class="stat-value" id="machine-disk-usage">0 GB</div>
+                            <div class="stat-label">Total Used Space</div>
+                        </div>
+                        <div class="stat-details">
+                            <div class="usage-bar">
+                                <div class="usage-fill" id="machine-usage-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="usage-text" id="machine-usage-text">0% of total capacity</div>
+                            <div class="stat-sub-metric">
+                                <span class="sub-metric-label">Total Backup Size:</span>
+                                <span class="sub-metric-value" id="total-backup-size">0 GB</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Secondary Metrics and Last Backup -->
+            <div class="secondary-metrics">
+
+            </div>
+
+            <!-- Recent Activity -->
+            <div class="dashboard-card recent-activity-card">
+                <div class="card-header">
+                    <h3>📋 Recent Activity</h3>
+                    <div class="activity-controls">
+                        <a href="/backup" class="btn btn-link">View Backup Logs</a>
+                        <button class="btn btn-danger btn-sm" id="delete-history-btn" onclick="clearBackupHistory()">
+                            <span class="btn-icon">🗑️</span>
+                            Delete History
+                        </button>
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div id="recent-activity">
+                        <p class="text-muted">Loading recent activity...</p>
+                    </div>
+                    <div id="recent-activity-pagination" class="pagination-controls" style="display: none;">
+                        <div class="pagination-info">
+                            <span id="pagination-info">Showing 1-5 of 10</span>
+                        </div>
+                        <div class="pagination-buttons">
+                            <button id="prev-page-btn" class="btn btn-sm btn-outline" disabled>
+                                <span class="btn-icon">←</span>
+                                Previous
+                            </button>
+                            <button id="next-page-btn" class="btn btn-sm btn-outline" disabled>
+                                Next
+                                <span class="btn-icon">→</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/static/common.js"></script>
+    <script src="/static/ws.js"></script>
+    <script src="/static/dashboard.js"></script>
+    <script>
+        // Initialize dashboard when DOM is loaded
+        document.addEventListener('DOMContentLoaded', function() {
+            initDashboard();
+        });
+    </script>
+</body>
+</html>
