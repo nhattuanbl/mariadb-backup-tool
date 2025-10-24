@@ -292,16 +292,19 @@ func SetupLogBroadcasting() {
 		logsMutex.RUnlock()
 
 		// Write to each connection with its own mutex
-		for conn, mutex := range connections {
-			mutex.Lock()
-			if err := conn.WriteJSON(wsMessage); err != nil {
-				// Connection is likely closed, remove it
-				logsMutex.Lock()
-				delete(logsConnections, conn)
-				logsMutex.Unlock()
+		// Use goroutine to prevent blocking on slow connections
+		go func() {
+			for conn, mutex := range connections {
+				mutex.Lock()
+				if err := conn.WriteJSON(wsMessage); err != nil {
+					// Connection is likely closed, remove it
+					logsMutex.Lock()
+					delete(logsConnections, conn)
+					logsMutex.Unlock()
+				}
+				mutex.Unlock()
 			}
-			mutex.Unlock()
-		}
+		}()
 	}
 
 	broadcastLogEntryWithTime = func(level, message string, timestamp time.Time) {
@@ -336,16 +339,19 @@ func SetupLogBroadcasting() {
 		logsMutex.RUnlock()
 
 		// Write to each connection with its own mutex
-		for conn, mutex := range connections {
-			mutex.Lock()
-			if err := conn.WriteJSON(wsMessage); err != nil {
-				// Connection is likely closed, remove it
-				logsMutex.Lock()
-				delete(logsConnections, conn)
-				logsMutex.Unlock()
+		// Use goroutine to prevent blocking on slow connections
+		go func() {
+			for conn, mutex := range connections {
+				mutex.Lock()
+				if err := conn.WriteJSON(wsMessage); err != nil {
+					// Connection is likely closed, remove it
+					logsMutex.Lock()
+					delete(logsConnections, conn)
+					logsMutex.Unlock()
+				}
+				mutex.Unlock()
 			}
-			mutex.Unlock()
-		}
+		}()
 	}
 }
 

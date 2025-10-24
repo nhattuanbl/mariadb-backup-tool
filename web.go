@@ -2187,11 +2187,16 @@ func handleLogStream(w http.ResponseWriter, r *http.Request) {
 	date := r.URL.Query().Get("date")
 	limitStr := r.URL.Query().Get("limit")
 
-	// Set default limit
-	limit := 1000
+	// Set default limit with reasonable maximum to prevent performance issues
+	limit := 2000
 	if limitStr != "" {
 		if parsedLimit, err := strconv.Atoi(limitStr); err == nil && parsedLimit > 0 {
-			limit = parsedLimit
+			// Cap the limit to prevent excessive memory usage
+			if parsedLimit > 5000 {
+				limit = 5000
+			} else {
+				limit = parsedLimit
+			}
 		}
 	}
 
@@ -2387,9 +2392,10 @@ func getLogEntries(date, endTime string, limit int) ([]map[string]interface{}, e
 		return nil, fmt.Errorf("failed to read log file: %v", err)
 	}
 
-	// Parse log entries
+	// Parse log entries efficiently
 	lines := strings.Split(string(content), "\n")
 	var entries []map[string]interface{}
+	entries = make([]map[string]interface{}, 0, limit) // Pre-allocate with capacity
 
 	for i, line := range lines {
 		if i >= limit {

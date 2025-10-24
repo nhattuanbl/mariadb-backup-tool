@@ -10,6 +10,10 @@ let isCurrentDay = true;
 let seenLogIds = new Set();
 let allLogs = [];
 
+// Performance optimization: limit displayed logs to prevent browser lag
+const MAX_DISPLAYED_LOGS = 1500; // Show max 1500 log entries in DOM
+const MAX_STORED_LOGS = 2000; // Keep max 2000 logs in memory for filtering
+
 function generateLogId(log) {
     return `${log.timestamp}-${log.level}-${log.message}`.replace(/\s+/g, '_');
 }
@@ -56,7 +60,7 @@ function loadInitialLogsForDate(date) {
     
     const params = new URLSearchParams();
     params.append('date', date);
-    params.append('limit', '1000');
+    params.append('limit', MAX_STORED_LOGS.toString());
     
     fetch(`/api/logs/stream?${params}`)
         .then(response => {
@@ -124,13 +128,23 @@ function displayAllLogs() {
         return timeB - timeA;
     });
     
-    filteredLogs.forEach(log => {
+    // Performance optimization: limit displayed logs to prevent browser lag
+    const logsToDisplay = filteredLogs.slice(0, MAX_DISPLAYED_LOGS);
+    const totalFilteredCount = filteredLogs.length;
+    
+    logsToDisplay.forEach(log => {
         const logEntry = createLogEntry(log);
         container.appendChild(logEntry);
     });
     
     if (logCount) {
-        logCount.textContent = `${filteredLogs.length} entries`;
+        if (totalFilteredCount > MAX_DISPLAYED_LOGS) {
+            logCount.textContent = `${logsToDisplay.length} of ${totalFilteredCount} entries (showing latest ${MAX_DISPLAYED_LOGS})`;
+            logCount.title = `Performance optimized: Only showing the latest ${MAX_DISPLAYED_LOGS} entries to prevent browser lag`;
+        } else {
+            logCount.textContent = `${logsToDisplay.length} entries`;
+            logCount.title = '';
+        }
     }
     
     scrollToTop();
@@ -138,6 +152,11 @@ function displayAllLogs() {
 
 function addNewLog(log) {
     allLogs.unshift(log);
+    
+    // Performance optimization: limit stored logs to prevent memory issues
+    if (allLogs.length > MAX_STORED_LOGS) {
+        allLogs = allLogs.slice(0, MAX_STORED_LOGS);
+    }
     
     if (isViewCleared) {
         return;
@@ -157,10 +176,31 @@ function addNewLog(log) {
             const logEntry = createLogEntry(log);
             container.insertBefore(logEntry, container.firstChild);
             
+            // Performance optimization: remove old DOM elements if we exceed the limit
+            const logEntries = container.querySelectorAll('.log-entry');
+            if (logEntries.length > MAX_DISPLAYED_LOGS) {
+                // Remove the oldest entries (at the bottom)
+                const entriesToRemove = logEntries.length - MAX_DISPLAYED_LOGS;
+                for (let i = 0; i < entriesToRemove; i++) {
+                    const lastEntry = logEntries[logEntries.length - 1 - i];
+                    if (lastEntry) {
+                        lastEntry.remove();
+                    }
+                }
+            }
+            
             const logCount = document.getElementById('log-count');
             if (logCount) {
                 const currentCount = parseInt(logCount.textContent.split(' ')[0]) || 0;
-                logCount.textContent = `${currentCount + 1} entries`;
+                const totalFilteredCount = applyCurrentFilters(allLogs).length;
+                
+                if (totalFilteredCount > MAX_DISPLAYED_LOGS) {
+                    logCount.textContent = `${Math.min(currentCount + 1, MAX_DISPLAYED_LOGS)} of ${totalFilteredCount} entries (showing latest ${MAX_DISPLAYED_LOGS})`;
+                    logCount.title = `Performance optimized: Only showing the latest ${MAX_DISPLAYED_LOGS} entries to prevent browser lag`;
+                } else {
+                    logCount.textContent = `${currentCount + 1} entries`;
+                    logCount.title = '';
+                }
             }
             
             scrollToTop();
