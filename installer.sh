@@ -9,7 +9,6 @@ BLUE='\033[0;34m'
 NC='\033[0m' 
 
 APP_NAME="mariadb-backup-tool"
-APP_VERSION=$(cat version.txt)
 INSTALL_DIR="/etc/mariadb-backup-tool"
 BIN_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
@@ -21,6 +20,15 @@ GROUP="root"
 
 GITHUB_REPO="nhattuanbl/mariadb-backup-tool"
 GITHUB_URL="https://github.com/${GITHUB_REPO}"
+
+# Download version.txt from repository or use fallback
+if command -v curl >/dev/null 2>&1; then
+    APP_VERSION=$(curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/master/version.txt 2>/dev/null || echo "1.0.1")
+elif command -v wget >/dev/null 2>&1; then
+    APP_VERSION=$(wget -qO- https://raw.githubusercontent.com/${GITHUB_REPO}/master/version.txt 2>/dev/null || echo "1.0.1")
+else
+    APP_VERSION="1.0.1"
+fi
 
 print_status() {
     echo -e "${BLUE}[INFO]${NC} $1"
