@@ -3201,6 +3201,7 @@ hr {
     box-shadow: inset 0 2px 4px rgba(255, 107, 0, 0.2);
 }
 
+/* Black Ops 3 Style Buttons for Start New Backup Card */
 .start-backup-card .form-actions .btn {
     flex: 1;
     min-width: 120px;
@@ -3208,19 +3209,24 @@ hr {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 14px 20px;
-    background: linear-gradient(135deg, #ff6b00, #ff8c00);
-    border: none;
-    border-radius: 4px;
+    padding: 16px 24px;
+    background: linear-gradient(135deg, #1a1a1a, #2d2d2d);
+    border: 2px solid #ff6b00;
+    border-radius: 6px;
     font-size: 14px;
     font-weight: 700;
     font-family: 'Rajdhani', sans-serif;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #000000;
+    letter-spacing: 1px;
+    color: #ff6b00;
     cursor: pointer;
     transition: all 0.3s ease;
     overflow: hidden;
+    box-shadow: 
+        0 4px 15px rgba(255, 107, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+    text-shadow: 0 0 8px rgba(255, 107, 0, 0.5);
 }
 
 .start-backup-card .form-actions .btn::before {
@@ -3230,58 +3236,238 @@ hr {
     left: -100%;
     width: 100%;
     height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
-    transition: left 0.5s ease;
+    background: linear-gradient(90deg, transparent, rgba(255, 107, 0, 0.2), transparent);
+    transition: left 0.6s ease;
+}
+
+.start-backup-card .form-actions .btn::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(45deg, transparent, rgba(255, 107, 0, 0.05), transparent);
+    opacity: 0;
+    transition: opacity 0.3s ease;
 }
 
 .start-backup-card .form-actions .btn:hover {
-    background: linear-gradient(135deg, #ff8c00, #ffa500);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(255, 107, 0, 0.4);
+    background: linear-gradient(135deg, #2d2d2d, #404040);
+    border-color: #ff8c00;
+    transform: translateY(-3px);
+    box-shadow: 
+        0 12px 35px rgba(255, 107, 0, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    text-shadow: 0 0 12px rgba(255, 107, 0, 0.8);
+    color: #ff8c00;
 }
 
 .start-backup-card .form-actions .btn:hover::before {
     left: 100%;
 }
 
+.start-backup-card .form-actions .btn:hover::after {
+    opacity: 1;
+}
+
 .start-backup-card .form-actions .btn:active {
-    transform: translateY(0);
+    transform: translateY(-1px);
+    box-shadow: 
+        0 6px 20px rgba(255, 107, 0, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 }
 
 .start-backup-card .form-actions .btn:disabled {
-    opacity: 0.7;
+    opacity: 0.5;
     cursor: not-allowed;
     transform: none;
+    border-color: #666;
+    color: #666;
+    text-shadow: none;
+    box-shadow: 
+        0 2px 8px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.2);
 }
 
+/* Black Ops 3 Loading state for buttons */
+.btn.loading {
+    position: relative;
+    pointer-events: none;
+    opacity: 0.8;
+    animation: bo3-button-pulse 2s ease-in-out infinite;
+}
+
+.btn.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+    border: 2px solid transparent;
+    border-top: 2px solid currentColor;
+    border-radius: 50%;
+    animation: bo3-spin 1s linear infinite;
+    box-shadow: 0 0 10px currentColor;
+}
+
+@keyframes bo3-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@keyframes bo3-button-pulse {
+    0%, 100% { 
+        opacity: 0.8;
+        box-shadow: 
+            0 4px 15px rgba(255, 107, 0, 0.3),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1),
+            inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+    }
+    50% { 
+        opacity: 0.9;
+        box-shadow: 
+            0 6px 20px rgba(255, 107, 0, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.15),
+            inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    }
+}
+
+/* Black Ops 3 Style Button Variants */
 .start-backup-card .form-actions .btn.btn-secondary {
-    background: linear-gradient(135deg, #6c757d, #868e96);
-    color: #ffffff;
+    background: linear-gradient(135deg, #2c2c2c, #404040);
+    border-color: #6c757d;
+    color: #adb5bd;
+    text-shadow: 0 0 8px rgba(173, 181, 189, 0.5);
+    box-shadow: 
+        0 4px 15px rgba(108, 117, 125, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 }
 
 .start-backup-card .form-actions .btn.btn-secondary:hover {
-    background: linear-gradient(135deg, #868e96, #adb5bd);
-    box-shadow: 0 8px 25px rgba(108, 117, 125, 0.4);
+    background: linear-gradient(135deg, #404040, #555555);
+    border-color: #868e96;
+    color: #ffffff;
+    text-shadow: 0 0 12px rgba(255, 255, 255, 0.8);
+    box-shadow: 
+        0 12px 35px rgba(108, 117, 125, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4);
 }
 
 .start-backup-card .form-actions .btn.btn-success {
-    background: linear-gradient(135deg, #28a745, #34ce57);
-    color: #ffffff;
+    background: linear-gradient(135deg, #1a3d1a, #2d4a2d);
+    border-color: #28a745;
+    color: #28a745;
+    text-shadow: 0 0 8px rgba(40, 167, 69, 0.5);
+    box-shadow: 
+        0 4px 15px rgba(40, 167, 69, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 }
 
 .start-backup-card .form-actions .btn.btn-success:hover {
-    background: linear-gradient(135deg, #34ce57, #40d65c);
-    box-shadow: 0 8px 25px rgba(40, 167, 69, 0.4);
+    background: linear-gradient(135deg, #2d4a2d, #404040);
+    border-color: #34ce57;
+    color: #34ce57;
+    text-shadow: 0 0 12px rgba(52, 206, 87, 0.8);
+    box-shadow: 
+        0 12px 35px rgba(40, 167, 69, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4);
 }
 
 .start-backup-card .form-actions .btn.btn-danger {
-    background: linear-gradient(135deg, #dc3545, #e74c3c);
-    color: #ffffff;
+    background: linear-gradient(135deg, #3d1a1a, #4a2d2d);
+    border-color: #dc3545;
+    color: #dc3545;
+    text-shadow: 0 0 8px rgba(220, 53, 69, 0.5);
+    box-shadow: 
+        0 4px 15px rgba(220, 53, 69, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 }
 
 .start-backup-card .form-actions .btn.btn-danger:hover {
-    background: linear-gradient(135deg, #e74c3c, #f56565);
-    box-shadow: 0 8px 25px rgba(220, 53, 69, 0.4);
+    background: linear-gradient(135deg, #4a2d2d, #404040);
+    border-color: #e74c3c;
+    color: #e74c3c;
+    text-shadow: 0 0 12px rgba(231, 76, 60, 0.8);
+    box-shadow: 
+        0 12px 35px rgba(220, 53, 69, 0.5),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* Black Ops 3 Tactical Effects for Start Backup Card */
+.start-backup-card .form-actions {
+    position: relative;
+}
+
+.start-backup-card .form-actions::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    background: linear-gradient(45deg, 
+        rgba(255, 107, 0, 0.1), 
+        transparent, 
+        rgba(255, 107, 0, 0.1), 
+        transparent);
+    border-radius: 8px;
+    animation: bo3-tactical-scan 4s ease-in-out infinite;
+    pointer-events: none;
+    z-index: -1;
+}
+
+@keyframes bo3-tactical-scan {
+    0%, 100% { 
+        opacity: 0.3;
+        transform: scale(1);
+    }
+    50% { 
+        opacity: 0.6;
+        transform: scale(1.02);
+    }
+}
+
+/* Enhanced button focus states for accessibility */
+.start-backup-card .form-actions .btn:focus {
+    outline: none;
+    border-color: #00d4ff;
+    box-shadow: 
+        0 0 0 3px rgba(0, 212, 255, 0.3),
+        0 4px 15px rgba(255, 107, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+    animation: bo3-focus-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes bo3-focus-pulse {
+    0%, 100% { 
+        border-color: #00d4ff;
+        box-shadow: 
+            0 0 0 3px rgba(0, 212, 255, 0.3),
+            0 4px 15px rgba(255, 107, 0, 0.3),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1),
+            inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+    }
+    50% { 
+        border-color: #00a8cc;
+        box-shadow: 
+            0 0 0 3px rgba(0, 168, 204, 0.5),
+            0 6px 20px rgba(255, 107, 0, 0.4),
+            inset 0 1px 0 rgba(255, 255, 255, 0.15),
+            inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    }
 }
 
 .backup-mode-selector {

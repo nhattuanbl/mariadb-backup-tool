@@ -10,6 +10,15 @@ window.startBackupAll = function() {
         return;
     }
     
+    // Store original button state
+    const originalText = startBtn.textContent;
+    const originalDisabled = startBtn.disabled;
+    
+    // Disable button and show loading state
+    startBtn.disabled = true;
+    startBtn.textContent = '🔄 Loading Databases...';
+    startBtn.classList.add('loading');
+    
     // Get all available databases from the system (excluding ignored ones)
     fetch('/api/databases')
         .then(response => response.json())
@@ -19,8 +28,15 @@ window.startBackupAll = function() {
                 
                 if (allDatabases.length === 0) {
                     showToast('No databases available for backup.', 'warning');
+                    // Re-enable button
+                    startBtn.disabled = originalDisabled;
+                    startBtn.textContent = originalText;
+                    startBtn.classList.remove('loading');
                     return;
                 }
+                
+                // Update button text to show starting backup
+                startBtn.textContent = '🚀 Starting Backup...';
                 
                 const backupData = {
                     backup_mode: document.getElementById('backup_mode').value,
@@ -45,14 +61,28 @@ window.startBackupAll = function() {
                 .catch(error => {
                     console.error('Error starting backup:', error);
                     showToast('Error starting backup', 'error');
+                })
+                .finally(() => {
+                    // Re-enable button after backup start attempt
+                    startBtn.disabled = originalDisabled;
+                    startBtn.textContent = originalText;
+                    startBtn.classList.remove('loading');
                 });
             } else {
                 showToast('Failed to load databases. Please try again.', 'error');
+                // Re-enable button
+                startBtn.disabled = originalDisabled;
+                startBtn.textContent = originalText;
+                startBtn.classList.remove('loading');
             }
         })
         .catch(error => {
             console.error('Error loading databases:', error);
             showToast('Error loading databases', 'error');
+            // Re-enable button
+            startBtn.disabled = originalDisabled;
+            startBtn.textContent = originalText;
+            startBtn.classList.remove('loading');
         });
 };
 
@@ -248,6 +278,15 @@ function startBackupSelected() {
         return;
     }
     
+    // Store original button state
+    const originalText = backupBtn.textContent;
+    const originalDisabled = backupBtn.disabled;
+    
+    // Disable button and show loading state
+    backupBtn.disabled = true;
+    backupBtn.textContent = '🚀 Starting Backup...';
+    backupBtn.classList.add('loading');
+    
     const backupData = {
         backup_mode: document.getElementById('backup_mode').value,
         databases: selectedDatabases
@@ -270,6 +309,12 @@ function startBackupSelected() {
     .catch(error => {
         console.error('Error starting backup:', error);
         showToast('Error starting backup', 'error');
+    })
+    .finally(() => {
+        // Re-enable button after backup start attempt
+        backupBtn.disabled = originalDisabled;
+        backupBtn.textContent = originalText;
+        backupBtn.classList.remove('loading');
     });
 }
 
@@ -317,6 +362,9 @@ function startQuickBackup(mode) {
         backup_mode: mode,
         databases: [] // Empty array means backup all databases
     };
+    
+    // Note: This function doesn't have a specific button to manage state
+    // It's typically called from other UI elements that should handle their own state
     
     fetch('/api/backup/start', {
         method: 'POST',
