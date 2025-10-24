@@ -219,7 +219,8 @@ func requireValidTests(handler func(http.ResponseWriter, *http.Request)) http.Ha
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Login - MariaDB Backup Tool",
+			"Title":   "Login - MariaDB Backup Tool",
+			"Version": Version,
 		})
 		return
 	}
@@ -259,8 +260,9 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		// Invalid credentials
 		renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Login - MariaDB Backup Tool",
-			"Error": "Invalid username or password",
+			"Title":   "Login - MariaDB Backup Tool",
+			"Error":   "Invalid username or password",
+			"Version": Version,
 		})
 	}
 }
@@ -1772,6 +1774,9 @@ func handleStartBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reset global abort flag when starting new backups
+	ResetGlobalBackupAbort()
+
 	// Parse request body
 	var requestData struct {
 		BackupMode string   `json:"backup_mode"`
@@ -2679,26 +2684,30 @@ func calculateNextBackupTime(startTime string, intervalHours int) string {
 }
 
 // Global abort mechanism for backup processes
-var globalBackupAbortChan = make(chan struct{}, 1)
+var globalBackupAbortFlag bool
+var globalBackupAbortMutex sync.RWMutex
 
 // SignalGlobalBackupAbort signals all backup processes to abort
 func SignalGlobalBackupAbort() {
-	select {
-	case globalBackupAbortChan <- struct{}{}:
-		LogInfo("Global backup abort signal sent")
-	default:
-		LogInfo("Global backup abort signal already pending")
-	}
+	globalBackupAbortMutex.Lock()
+	globalBackupAbortFlag = true
+	globalBackupAbortMutex.Unlock()
+	LogInfo("Global backup abort signal sent")
 }
 
 // CheckGlobalBackupAbort checks if global abort has been signaled
 func CheckGlobalBackupAbort() bool {
-	select {
-	case <-globalBackupAbortChan:
-		return true
-	default:
-		return false
-	}
+	globalBackupAbortMutex.RLock()
+	defer globalBackupAbortMutex.RUnlock()
+	return globalBackupAbortFlag
+}
+
+// ResetGlobalBackupAbort resets the global abort flag (call this when starting new backups)
+func ResetGlobalBackupAbort() {
+	globalBackupAbortMutex.Lock()
+	globalBackupAbortFlag = false
+	globalBackupAbortMutex.Unlock()
+	LogInfo("Global backup abort flag reset")
 }
 
 // handleDetectBinary API endpoint to detect binary files automatically

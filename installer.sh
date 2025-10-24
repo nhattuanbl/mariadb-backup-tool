@@ -9,7 +9,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' 
 
 APP_NAME="mariadb-backup-tool"
-APP_VERSION="1.0.4"
+APP_VERSION=$(cat version.txt)
 INSTALL_DIR="/etc/mariadb-backup-tool"
 BIN_DIR="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"

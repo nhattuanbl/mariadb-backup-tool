@@ -477,7 +477,16 @@ function displayRunningJobs(data) {
         // Job group header
         const runningCount = jobGroup.filter(j => j.status === 'running').length;
         const optimizingCount = jobGroup.filter(j => j.status === 'optimizing').length;
-        const successCount = jobGroup.filter(j => j.status === 'done').length;
+        
+        // Use backup summary data for success count instead of counting individual job statuses
+        let successCount = 0;
+        if (summary) {
+            successCount = (summary.total_full || 0) + (summary.total_incremental || 0);
+        } else {
+            // Fallback to counting individual job statuses if no summary available
+            successCount = jobGroup.filter(j => j.status === 'done').length;
+        }
+        
         const failedCount = jobGroup.filter(j => j.status === 'failed').length;
         
         // Check if this job group state is already stored, otherwise use default
@@ -758,7 +767,16 @@ function showMoreJobGroups() {
         // Job group header
         const runningCount = jobGroup.filter(j => j.status === 'running').length;
         const optimizingCount = jobGroup.filter(j => j.status === 'optimizing').length;
-        const successCount = jobGroup.filter(j => j.status === 'done').length;
+        
+        // Use backup summary data for success count instead of counting individual job statuses
+        let successCount = 0;
+        if (summary) {
+            successCount = (summary.total_full || 0) + (summary.total_incremental || 0);
+        } else {
+            // Fallback to counting individual job statuses if no summary available
+            successCount = jobGroup.filter(j => j.status === 'done').length;
+        }
+        
         const failedCount = jobGroup.filter(j => j.status === 'failed').length;
         
         // Check if this job group state is already stored, otherwise default to collapsed

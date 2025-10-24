@@ -10,7 +10,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const Version = "1.0.0"
+// Version will be injected at build time via -ldflags
+var Version = "dev"
 
 func main() {
 	configFile := flag.String("config", "config.json", "Path to configuration file")

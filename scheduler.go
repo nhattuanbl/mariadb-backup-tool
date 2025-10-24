@@ -192,6 +192,9 @@ func (s *Scheduler) checkAndTriggerBackup() {
 func (s *Scheduler) triggerScheduledBackup() {
 	LogInfo("Triggering scheduled backup...")
 
+	// Reset global abort flag when starting scheduled backups
+	ResetGlobalBackupAbort()
+
 	// Get all databases (excluding ignored ones)
 	databases, err := getDatabases(s.config)
 	if err != nil {

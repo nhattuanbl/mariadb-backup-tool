@@ -1,7 +1,8 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set VERSION=1.0.0
+REM Read version from version.txt
+for /f %%i in (version.txt) do set VERSION=%%i
 set BUILD_DIR=build
 set DIST_DIR=dist
 
@@ -17,7 +18,7 @@ REM Build for all platforms
 echo Building for Linux AMD64...
 set GOOS=linux
 set GOARCH=amd64
-go build -o %BUILD_DIR%\mariadb-backup-tool-linux-amd64 -ldflags="-s -w" -trimpath .
+go build -o %BUILD_DIR%\mariadb-backup-tool-linux-amd64 -ldflags="-s -w -X main.Version=%VERSION%" -trimpath .
 if errorlevel 1 (
     echo Failed to build for Linux AMD64
     exit /b 1
@@ -26,7 +27,7 @@ if errorlevel 1 (
 echo Building for Linux ARM64...
 set GOOS=linux
 set GOARCH=arm64
-go build -o %BUILD_DIR%\mariadb-backup-tool-linux-arm64 -ldflags="-s -w" -trimpath .
+go build -o %BUILD_DIR%\mariadb-backup-tool-linux-arm64 -ldflags="-s -w -X main.Version=%VERSION%" -trimpath .
 if errorlevel 1 (
     echo Failed to build for Linux ARM64
     exit /b 1
@@ -35,7 +36,7 @@ if errorlevel 1 (
 echo Building for macOS AMD64...
 set GOOS=darwin
 set GOARCH=amd64
-go build -o %BUILD_DIR%\mariadb-backup-tool-darwin-amd64 -ldflags="-s -w" -trimpath .
+go build -o %BUILD_DIR%\mariadb-backup-tool-darwin-amd64 -ldflags="-s -w -X main.Version=%VERSION%" -trimpath .
 if errorlevel 1 (
     echo Failed to build for macOS AMD64
     exit /b 1
@@ -44,7 +45,7 @@ if errorlevel 1 (
 echo Building for macOS ARM64...
 set GOOS=darwin
 set GOARCH=arm64
-go build -o %BUILD_DIR%\mariadb-backup-tool-darwin-arm64 -ldflags="-s -w" -trimpath .
+go build -o %BUILD_DIR%\mariadb-backup-tool-darwin-arm64 -ldflags="-s -w -X main.Version=%VERSION%" -trimpath .
 if errorlevel 1 (
     echo Failed to build for macOS ARM64
     exit /b 1
@@ -53,7 +54,7 @@ if errorlevel 1 (
 echo Building for Windows AMD64...
 set GOOS=windows
 set GOARCH=amd64
-go build -o %BUILD_DIR%\mariadb-backup-tool-windows-amd64.exe -ldflags="-s -w -H windowsgui" -trimpath .
+go build -o %BUILD_DIR%\mariadb-backup-tool-windows-amd64.exe -ldflags="-s -w -H windowsgui -X main.Version=%VERSION%" -trimpath .
 if errorlevel 1 (
     echo Failed to build for Windows AMD64
     exit /b 1
@@ -62,7 +63,7 @@ if errorlevel 1 (
 echo Building for Windows ARM64...
 set GOOS=windows
 set GOARCH=arm64
-go build -o %BUILD_DIR%\mariadb-backup-tool-windows-arm64.exe -ldflags="-s -w -H windowsgui" -trimpath .
+go build -o %BUILD_DIR%\mariadb-backup-tool-windows-arm64.exe -ldflags="-s -w -H windowsgui -X main.Version=%VERSION%" -trimpath .
 if errorlevel 1 (
     echo Failed to build for Windows ARM64
     exit /b 1
