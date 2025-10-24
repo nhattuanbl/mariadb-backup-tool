@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -39,6 +40,9 @@ type BackupIncResponse struct {
 func StartIncBackup(request BackupIncRequest) BackupIncResponse {
 	LogInfo("🚀 [INC-BACKUP-START] Starting manual incremental backup - JobID: %s, Databases: %v, Mode: %s, RequestedBy: %s",
 		request.JobID, request.Databases, request.BackupMode, request.RequestedBy)
+
+	// Reset global abort flag when starting new backup
+	ResetGlobalBackupAbort()
 
 	config, err := loadConfig("config.json")
 	if err != nil {
@@ -264,8 +268,26 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 					LogWarn("⚠️ [MEMORY] Memory threshold exceeded (%.2f%% > %d%%), waiting for memory to be freed before starting %s",
 						getCurrentMemoryUsage(), config.Backup.MaxMemoryThreshold, dbName)
 
-					// Wait for memory to be freed or MySQL restart to complete
+					// Wait for memory to be freed or MySQL restart to complete with 10-minute timeout
+					memoryTimeoutStart := time.Now()
+					memoryTimeoutDuration := 10 * time.Minute
+
 					for shouldRestartMySQL(config) {
+						// Check if we've exceeded the 10-minute timeout
+						if time.Since(memoryTimeoutStart) > memoryTimeoutDuration {
+							LogError("❌ [MEMORY-TIMEOUT] Memory threshold exceeded for more than 10 minutes, marking process as failed and stopping all backups")
+
+							// Mark this database as failed due to timeout
+							updateErr := CompleteBackupJob(request.JobID, dbName, false, 0, "", "Memory threshold exceeded for more than 10 minutes - process failed")
+							if updateErr != nil {
+								LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+							}
+
+							// Signal global abort to stop all backup processes
+							SignalGlobalBackupAbort()
+							return
+						}
+
 						time.Sleep(5 * time.Second)
 						if CheckGlobalBackupAbort() {
 							LogWarn("⚠️ [WORKER-%d] Incremental backup aborted while waiting for memory threshold", workerID)
@@ -462,6 +484,68 @@ type IncrementalDatabaseBackupResult struct {
 // executeIncrementalDatabaseBackup executes incremental backup for a single database using mariadb-binlog
 func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, startTime time.Time) IncrementalDatabaseBackupResult {
 	LogDebug("🏗️ [INC-BACKUP-SETUP] Setting up incremental backup for database: %s, JobID: %s", dbName, jobID)
+
+	// Test MySQL connection with timeout before starting backup
+	LogDebug("🔍 [CONNECTION-TEST] Testing MySQL connection before incremental backup for %s", dbName)
+	connectionTimeoutStart := time.Now()
+	connectionTimeoutDuration := 10 * time.Minute
+
+	for {
+		// Test connection
+		dsn, err := buildMySQLDSN(config)
+		if err != nil {
+			LogError("❌ [CONNECTION-TEST] Failed to build DSN for %s: %v", dbName, err)
+			break
+		}
+
+		db, err := sql.Open("mysql", dsn)
+		if err != nil {
+			LogError("❌ [CONNECTION-TEST] Failed to connect to MySQL for %s: %v", dbName, err)
+			break
+		}
+
+		// Test ping with timeout
+		pingCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = db.PingContext(pingCtx)
+		cancel()
+		db.Close()
+
+		if err == nil {
+			LogDebug("✅ [CONNECTION-TEST] MySQL connection successful for %s", dbName)
+			break
+		}
+
+		// Check if we've exceeded the 10-minute timeout
+		if time.Since(connectionTimeoutStart) > connectionTimeoutDuration {
+			LogError("❌ [CONNECTION-TIMEOUT] MySQL connection failed for more than 10 minutes, marking process as failed and stopping all backups")
+
+			// Mark this database as failed due to connection timeout
+			updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", "MySQL connection failed for more than 10 minutes - process failed")
+			if updateErr != nil {
+				LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+			}
+
+			// Signal global abort to stop all backup processes
+			SignalGlobalBackupAbort()
+
+			return IncrementalDatabaseBackupResult{
+				Success:      false,
+				ErrorMessage: "MySQL connection failed for more than 10 minutes - process failed",
+			}
+		}
+
+		LogWarn("⚠️ [CONNECTION-TEST] MySQL connection failed for %s, retrying in 30 seconds...", dbName)
+		time.Sleep(30 * time.Second)
+
+		// Check for global abort
+		if CheckGlobalBackupAbort() {
+			LogWarn("⚠️ [CONNECTION-TEST] Incremental backup aborted while testing connection for %s", dbName)
+			return IncrementalDatabaseBackupResult{
+				Success:      false,
+				ErrorMessage: "Backup aborted while testing connection",
+			}
+		}
+	}
 
 	backupDir := filepath.Join(config.Backup.BackupDir, dbName)
 	err := os.MkdirAll(backupDir, 0755)

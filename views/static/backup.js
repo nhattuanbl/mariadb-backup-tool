@@ -478,16 +478,19 @@ function displayRunningJobs(data) {
         const runningCount = jobGroup.filter(j => j.status === 'running').length;
         const optimizingCount = jobGroup.filter(j => j.status === 'optimizing').length;
         
-        // Use backup summary data for success count instead of counting individual job statuses
+        // Use backup summary data for success and failed counts instead of counting individual job statuses
         let successCount = 0;
+        let failedCount = 0;
         if (summary) {
             successCount = (summary.total_full || 0) + (summary.total_incremental || 0);
+            failedCount = summary.total_failed || 0;
+            console.log(`Job ${jobId}: Using summary data - success: ${successCount}, failed: ${failedCount}`, summary);
         } else {
             // Fallback to counting individual job statuses if no summary available
             successCount = jobGroup.filter(j => j.status === 'done').length;
+            failedCount = jobGroup.filter(j => j.status === 'failed').length;
+            console.log(`Job ${jobId}: Using fallback data - success: ${successCount}, failed: ${failedCount}`);
         }
-        
-        const failedCount = jobGroup.filter(j => j.status === 'failed').length;
         
         // Check if this job group state is already stored, otherwise use default
         let isExpanded;
@@ -768,16 +771,19 @@ function showMoreJobGroups() {
         const runningCount = jobGroup.filter(j => j.status === 'running').length;
         const optimizingCount = jobGroup.filter(j => j.status === 'optimizing').length;
         
-        // Use backup summary data for success count instead of counting individual job statuses
+        // Use backup summary data for success and failed counts instead of counting individual job statuses
         let successCount = 0;
+        let failedCount = 0;
         if (summary) {
             successCount = (summary.total_full || 0) + (summary.total_incremental || 0);
+            failedCount = summary.total_failed || 0;
+            console.log(`Job ${jobId}: Using summary data - success: ${successCount}, failed: ${failedCount}`, summary);
         } else {
             // Fallback to counting individual job statuses if no summary available
             successCount = jobGroup.filter(j => j.status === 'done').length;
+            failedCount = jobGroup.filter(j => j.status === 'failed').length;
+            console.log(`Job ${jobId}: Using fallback data - success: ${successCount}, failed: ${failedCount}`);
         }
-        
-        const failedCount = jobGroup.filter(j => j.status === 'failed').length;
         
         // Check if this job group state is already stored, otherwise default to collapsed
         let isExpanded;
