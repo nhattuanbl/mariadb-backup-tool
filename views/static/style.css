@@ -3921,6 +3921,243 @@ hr {
     100% { transform: rotate(360deg); }
 }
 
+/* COD Style Loading Spinner */
+.cod-loading-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    position: relative;
+    background: #0a0a0a;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.cod-loading-container::before {
+    content: '';
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background: 
+        repeating-linear-gradient(
+            0deg,
+            rgba(0, 255, 0, 0.03) 0px,
+            transparent 1px,
+            transparent 2px,
+            rgba(0, 255, 0, 0.03) 3px
+        );
+    pointer-events: none;
+    animation: scanlines 8s linear infinite;
+}
+
+@keyframes scanlines {
+    0% { transform: translateY(0); }
+    100% { transform: translateY(10px); }
+}
+
+.cod-spinner-wrapper {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    margin: 0 auto 20px;
+}
+
+.cod-outer-ring {
+    position: absolute;
+    width: 120px;
+    height: 120px;
+    border: 2px solid rgba(255, 136, 0, 0.2);
+    border-radius: 50%;
+    animation: cod-pulse 2s ease-in-out infinite;
+}
+
+.cod-spinner {
+    position: absolute;
+    width: 100px;
+    height: 100px;
+    top: 10px;
+    left: 10px;
+    border: 3px solid transparent;
+    border-top: 3px solid #ff8800;
+    border-right: 3px solid #ff8800;
+    border-radius: 50%;
+    animation: cod-rotate 1s linear infinite;
+}
+
+.cod-spinner-inner {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+    top: 20px;
+    left: 20px;
+    border: 2px solid transparent;
+    border-bottom: 2px solid #00ff88;
+    border-left: 2px solid #00ff88;
+    border-radius: 50%;
+    animation: cod-rotate-reverse 1.5s linear infinite;
+}
+
+.cod-center-dot {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    top: 54px;
+    left: 54px;
+    background: #ff8800;
+    border-radius: 50%;
+    box-shadow: 
+        0 0 10px #ff8800,
+        0 0 20px #ff8800,
+        0 0 30px rgba(255, 136, 0, 0.5);
+    animation: cod-pulse-dot 1s ease-in-out infinite;
+}
+
+.cod-corner-lines {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+}
+
+.cod-corner-line {
+    position: absolute;
+    width: 20px;
+    height: 2px;
+    background: #ff8800;
+    box-shadow: 0 0 5px #ff8800;
+}
+
+.cod-corner-line:nth-child(1) {
+    top: -5px;
+    left: -5px;
+    transform: rotate(45deg);
+    animation: cod-corner-pulse 2s ease-in-out infinite;
+}
+
+.cod-corner-line:nth-child(2) {
+    top: -5px;
+    right: -5px;
+    transform: rotate(-45deg);
+    animation: cod-corner-pulse 2s ease-in-out infinite 0.5s;
+}
+
+.cod-corner-line:nth-child(3) {
+    bottom: -5px;
+    right: -5px;
+    transform: rotate(45deg);
+    animation: cod-corner-pulse 2s ease-in-out infinite 1s;
+}
+
+.cod-corner-line:nth-child(4) {
+    bottom: -5px;
+    left: -5px;
+    transform: rotate(-45deg);
+    animation: cod-corner-pulse 2s ease-in-out infinite 1.5s;
+}
+
+.cod-loading-text {
+    color: #ff8800;
+    font-size: 16px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    text-shadow: 
+        0 0 8px #ff8800,
+        0 0 16px rgba(255, 136, 0, 0.5);
+    margin-bottom: 10px;
+    animation: cod-text-glow 2s ease-in-out infinite;
+    font-family: 'Courier New', monospace;
+}
+
+.cod-loading-dots {
+    color: #00ff88;
+    font-size: 14px;
+    letter-spacing: 3px;
+    font-family: 'Courier New', monospace;
+}
+
+.cod-percentage {
+    color: #00ff88;
+    font-size: 12px;
+    margin-top: 15px;
+    font-family: 'Courier New', monospace;
+    text-shadow: 0 0 8px #00ff88;
+}
+
+.cod-status-bar {
+    width: 200px;
+    height: 3px;
+    background: rgba(255, 136, 0, 0.2);
+    margin: 15px auto;
+    position: relative;
+    overflow: hidden;
+    border-radius: 2px;
+}
+
+.cod-status-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #ff8800, #00ff88);
+    width: 0%;
+    animation: cod-load 3s ease-in-out infinite;
+    box-shadow: 0 0 8px #ff8800;
+}
+
+@keyframes cod-rotate {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@keyframes cod-rotate-reverse {
+    0% { transform: rotate(360deg); }
+    100% { transform: rotate(0deg); }
+}
+
+@keyframes cod-pulse {
+    0%, 100% { 
+        transform: scale(1);
+        opacity: 0.3;
+    }
+    50% { 
+        transform: scale(1.05);
+        opacity: 0.6;
+    }
+}
+
+@keyframes cod-pulse-dot {
+    0%, 100% { 
+        transform: scale(1);
+        opacity: 0.8;
+    }
+    50% { 
+        transform: scale(1.3);
+        opacity: 1;
+    }
+}
+
+@keyframes cod-text-glow {
+    0%, 100% { 
+        text-shadow: 
+            0 0 8px #ff8800,
+            0 0 16px rgba(255, 136, 0, 0.5);
+    }
+    50% { 
+        text-shadow: 
+            0 0 16px #ff8800,
+            0 0 32px rgba(255, 136, 0, 0.8),
+            0 0 48px rgba(255, 136, 0, 0.4);
+    }
+}
+
+@keyframes cod-corner-pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+}
+
+@keyframes cod-load {
+    0% { width: 0%; }
+    100% { width: 100%; }
+}
+
 /* Job Item Updates */
 .job-details {
     display: flex;

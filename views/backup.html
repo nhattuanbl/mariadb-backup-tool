@@ -98,7 +98,9 @@
                             <div class="form-group">
                                 <label>Database Selection <span id="database-count" class="database-count"></span></label>
                                 <div id="database-list" class="database-list">
-                                    <p class="text-muted">Click "Load Databases" to see available databases</p>
+                                    <div class="no-jobs-message">
+                                        <p class="text-muted">Click "Load Databases" to see available databases</p>
+                                    </div>
                                 </div>
                             </div>
 
@@ -137,9 +139,25 @@
                 </div>
                 <div class="card-content">
                     <div id="running-jobs" class="running-jobs-layout">
-                            <div class="loading-jobs">
-                                <div class="spinner"></div>
-                                <p>Loading jobs...</p>
+                            <div class="cod-loading-container">
+                                <div class="cod-spinner-wrapper">
+                                    <div class="cod-outer-ring"></div>
+                                    <div class="cod-spinner"></div>
+                                    <div class="cod-spinner-inner"></div>
+                                    <div class="cod-center-dot"></div>
+                                    <div class="cod-corner-lines">
+                                        <div class="cod-corner-line"></div>
+                                        <div class="cod-corner-line"></div>
+                                        <div class="cod-corner-line"></div>
+                                        <div class="cod-corner-line"></div>
+                                    </div>
+                                </div>
+                                <div class="cod-loading-text">Loading</div>
+                                <div class="cod-loading-dots">...</div>
+                                <div class="cod-status-bar">
+                                    <div class="cod-status-bar-fill"></div>
+                                </div>
+                                <div class="cod-percentage">0%</div>
                             </div>
                         </div>
                     </div>
@@ -481,6 +499,11 @@
         document.addEventListener('DOMContentLoaded', function() {
             checkTestResults();
             handleURLParameters(); // Handle URL parameters for filtering
+            
+            // Start COD spinner animation
+            setTimeout(function() {
+                startCODSpinnerAnimation();
+            }, 100);
             
             // Initialize log stream with a small delay to ensure all scripts are loaded
             setTimeout(function() {

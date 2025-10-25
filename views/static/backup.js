@@ -429,7 +429,31 @@ function displayRunningJobs(data) {
     }
 
     if (!jobs || jobs.length === 0) {
-        container.innerHTML = '<div class="no-jobs-message"><p class="text-muted">No backup jobs found</p></div>';
+        container.innerHTML = `
+            <div class="cod-loading-container">
+                <div class="cod-spinner-wrapper">
+                    <div class="cod-outer-ring"></div>
+                    <div class="cod-spinner"></div>
+                    <div class="cod-spinner-inner"></div>
+                    <div class="cod-center-dot"></div>
+                    <div class="cod-corner-lines">
+                        <div class="cod-corner-line"></div>
+                        <div class="cod-corner-line"></div>
+                        <div class="cod-corner-line"></div>
+                        <div class="cod-corner-line"></div>
+                    </div>
+                </div>
+                <div class="cod-loading-text">Loading</div>
+                <div class="cod-loading-dots">...</div>
+                <div class="cod-status-bar">
+                    <div class="cod-status-bar-fill"></div>
+                </div>
+                <div class="cod-percentage">0%</div>
+            </div>
+        `;
+        
+        // Start the animated elements
+        startCODSpinnerAnimation();
         return;
     }
 
@@ -1228,5 +1252,49 @@ function checkTestResults() {
         updateButtonStates(false);
         showToast('Error checking system status. Buttons disabled for safety.', 'error');
     });
+}
+
+function startCODSpinnerAnimation() {
+    const dots = document.querySelector('.cod-loading-dots');
+    const percentage = document.querySelector('.cod-percentage');
+    
+    if (!dots || !percentage) return;
+    
+    let dotCount = 0;
+    let percent = 0;
+
+    // Animate loading dots
+    const dotsInterval = setInterval(() => {
+        if (!dots.parentElement) {
+            clearInterval(dotsInterval);
+            return;
+        }
+        dotCount = (dotCount + 1) % 4;
+        dots.textContent = '.'.repeat(dotCount || 1);
+    }, 400);
+
+    // Animate percentage counter
+    const percentInterval = setInterval(() => {
+        if (!percentage.parentElement) {
+            clearInterval(percentInterval);
+            return;
+        }
+        percent = (percent + 1) % 101;
+        percentage.textContent = percent + '%';
+    }, 30);
+    
+    // Store intervals for cleanup
+    window.codSpinnerIntervals = {
+        dots: dotsInterval,
+        percent: percentInterval
+    };
+}
+
+function stopCODSpinnerAnimation() {
+    if (window.codSpinnerIntervals) {
+        clearInterval(window.codSpinnerIntervals.dots);
+        clearInterval(window.codSpinnerIntervals.percent);
+        window.codSpinnerIntervals = null;
+    }
 }
 
