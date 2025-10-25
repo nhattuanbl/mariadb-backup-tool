@@ -636,7 +636,7 @@ function displayRunningJobs(data) {
                     <div class="job-info">
                         <div class="job-details">
                             <span class="job-id">${job.id}</span>
-                            <span class="job-database">📊 ${job.database_name}</span>
+                            <span class="job-database">${job.database_name}</span>
                             <span class="job-type">${icon} ${backupTypeDisplay}</span>
                             <span class="job-size">💾 ${size}</span>
                         </div>
@@ -923,7 +923,7 @@ function showMoreJobGroups() {
                     <div class="job-info">
                         <div class="job-details">
                             <span class="job-id">${job.id}</span>
-                            <span class="job-database">📊 ${job.database_name}</span>
+                            <span class="job-database">${job.database_name}</span>
                             <span class="job-type">${icon} ${backupTypeDisplay}</span>
                             <span class="job-size">💾 ${size}</span>
                         </div>

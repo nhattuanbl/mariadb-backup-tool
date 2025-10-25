@@ -169,7 +169,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 							return
 						}
 					}
-					LogInfo("✅ [MEMORY] Memory threshold cleared, proceeding with %s", dbName)
+					LogDebug("✅ [MEMORY] Memory threshold cleared, proceeding with %s", dbName)
 				}
 
 				activeProcesses <- struct{}{}
@@ -181,7 +181,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 					return
 				}
 
-				LogInfo("🚀 [WORKER-%d] Starting full backup for database: %s", workerID, dbName)
+				LogDebug("🚀 [WORKER-%d] Starting full backup for database: %s", workerID, dbName)
 
 				estimatedSizeKB := 0
 				if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
@@ -201,7 +201,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 				mu.Lock()
 				currentActiveProcesses := config.Backup.Parallel - len(activeProcesses)
 				mu.Unlock()
-				LogInfo("📊 [PARALLEL-STATUS] Worker-%d starting %s, %d/%d processes currently active",
+				LogDebug("📊 [PARALLEL-STATUS] Worker-%d starting %s, %d/%d processes currently active",
 					workerID, dbName, currentActiveProcesses, config.Backup.Parallel)
 
 				if shouldRestartMySQL(config) {
@@ -214,7 +214,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 					mu.Lock()
 					if mysqlRestartInProgress {
 						mu.Unlock()
-						LogInfo("⏳ [WORKER-%d] MySQL restart already in progress, waiting...", workerID)
+						LogDebug("⏳ [WORKER-%d] MySQL restart already in progress, waiting...", workerID)
 						for {
 							time.Sleep(5 * time.Second)
 							mu.Lock()
@@ -231,16 +231,16 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						mysqlRestartInProgress = true
 						mu.Unlock()
 
-						LogInfo("⏳ [MEMORY] Waiting for all active backup processes to complete before MySQL restart...")
+						LogDebug("⏳ [MEMORY] Waiting for all active backup processes to complete before MySQL restart...")
 						for j := 0; j < config.Backup.Parallel; j++ {
 							activeProcesses <- struct{}{}
 						}
 						for j := 0; j < config.Backup.Parallel; j++ {
 							<-activeProcesses
 						}
-						LogInfo("✅ [MEMORY] All active processes completed, proceeding with MySQL restart")
+						LogDebug("✅ [MEMORY] All active processes completed, proceeding with MySQL restart")
 
-						LogInfo("🔄 [MYSQL-RESTART] Starting MySQL service restart with monitoring")
+						LogDebug("🔄 [MYSQL-RESTART] Starting MySQL service restart with monitoring")
 						if !restartMySQLServiceWithMonitoring(config, &abortBackup) {
 							LogError("❌ [MYSQL-RESTART] MySQL service restart failed, aborting all backup processes")
 
@@ -256,7 +256,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 							mu.Unlock()
 							return
 						}
-						LogInfo("✅ [MYSQL-RESTART] MySQL service restart completed successfully")
+						LogDebug("✅ [MYSQL-RESTART] MySQL service restart completed successfully")
 
 						mu.Lock()
 						mysqlRestartInProgress = false
@@ -278,7 +278,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						return
 					}
 
-					LogInfo("🔧 [OPTIMIZE] Worker-%d: Starting database optimization for %s", workerID, dbName)
+					LogDebug("🔧 [OPTIMIZE] Worker-%d: Starting database optimization for %s", workerID, dbName)
 
 					if err := UpdateBackupJobStatusByDB(request.JobID, dbName, "optimizing"); err != nil {
 						LogError("❌ [SQLITE-ERROR] Failed to set status to optimizing for %s: %v", dbName, err)
@@ -302,7 +302,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 							go broadcastJobsUpdate()
 						}
 					} else {
-						LogInfo("✅ [OPTIMIZE] Worker-%d: Database optimization completed successfully for %s", workerID, dbName)
+						LogDebug("✅ [OPTIMIZE] Worker-%d: Database optimization completed successfully for %s", workerID, dbName)
 						if err := UpdateBackupJobStatusByDB(request.JobID, dbName, "running"); err != nil {
 							LogError("❌ [SQLITE-ERROR] Failed to set status back to running for %s: %v", dbName, err)
 						} else {
@@ -318,7 +318,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 					return
 				}
 
-				LogInfo("💾 [BACKUP] Worker-%d: Starting mysqldump backup for database: %s", workerID, dbName)
+				LogDebug("💾 [BACKUP] Worker-%d: Starting mysqldump backup for database: %s", workerID, dbName)
 				backupResult := executeDatabaseBackup(dbName, request.JobID, config)
 
 				LogDebug("🔒 [WORKER-%d]Setting job status to 'optimizing'for %s", workerID, dbName)
@@ -335,7 +335,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						LogWarn("⚠️ [DISK-SIZE] Failed to get disk size for %s: %v", dbName, err)
 					}
 
-					LogInfo("✅ [BACKUP-SUCCESS] Worker-%d: Backup completed for %s - Size: %d KB, File: %s",
+					LogDebug("✅ [BACKUP-SUCCESS] Worker-%d: Backup completed for %s - Size: %d KB, File: %s",
 						workerID, dbName, backupResult.SizeKB, backupResult.FilePath)
 				} else {
 					totalFailed++
@@ -354,7 +354,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 				mu.Lock()
 				currentActiveProcesses = config.Backup.Parallel - len(activeProcesses)
 				mu.Unlock()
-				LogInfo("📊 [PARALLEL-STATUS] Worker-%d completed %s, %d/%d processes currently active",
+				LogDebug("📊 [PARALLEL-STATUS] Worker-%d completed %s, %d/%d processes currently active",
 					workerID, dbName, currentActiveProcesses, config.Backup.Parallel)
 			}
 		}(i)
@@ -487,7 +487,7 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 	cmd := buildMysqldumpCommand(dbName, tempFilePath, config)
 
 	startTime := time.Now()
-	LogInfo("🚀 [EXECUTE] Starting mysqldump process for %s", dbName)
+	LogDebug("🚀 [EXECUTE] Starting mysqldump process for %s", dbName)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -671,7 +671,7 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 			return
 		}
 
-		LogInfo("✅ [BACKUP-MONITOR] Backup monitoring completed for %s: %d/%d tables processed",
+		LogDebug("✅ [BACKUP-MONITOR] Backup monitoring completed for %s: %d/%d tables processed",
 			dbName, processedTables, totalTables)
 	}(totalTables)
 
@@ -736,7 +736,7 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 			ErrorMessage: errorMessage,
 		}
 	}
-	LogInfo("✅ [EXECUTE] Mysqldump process completed successfully for %s in %v", dbName, duration)
+	LogDebug("✅ [EXECUTE] Mysqldump process completed successfully for %s in %v", dbName, duration)
 
 	// Rename temporary file to final filename with retry logic
 	LogDebug("📁 [RENAME] Renaming temporary file to final filename")
@@ -794,7 +794,7 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 	}
 
 	if backupSuccess {
-		LogInfo("🎉 [BACKUP-SUCCESS] Database backup completed successfully - DB: %s, Size: %d KB, Duration: %v, File: %s",
+		LogDebug("🎉 [BACKUP-SUCCESS] Database backup completed successfully - DB: %s, Size: %d KB, Duration: %v, File: %s",
 			dbName, sizeKB, duration, finalFilePath)
 	} else {
 		LogWarn("⚠️ [BACKUP-PARTIAL] Database backup completed with issues - DB: %s, Size: %d KB, Duration: %v, File: %s, Error: %s",
@@ -872,7 +872,7 @@ func buildWindowsCommand(dbName, outputPath string, config *Config) *exec.Cmd {
 	// This avoids file handle locking issues on Windows
 	cmd.Stdout = nil // Will be set to the file when command starts
 
-	LogInfo("Windows command built for %s: %s", dbName, strings.Join(cmd.Args, " "))
+	LogDebug("Windows command built for %s: %s", dbName, strings.Join(cmd.Args, " "))
 	return cmd
 }
 
@@ -1025,7 +1025,7 @@ func MonitorBackupProgress(cmd *exec.Cmd, dbName string, estimatedRows int, jobI
 		return
 	}
 
-	LogInfo("Starting process monitoring for %s (PID: %d)", dbName, process.Pid)
+	LogDebug("Starting process monitoring for %s (PID: %d)", dbName, process.Pid)
 
 	// Create a channel to signal when process is done
 	done := make(chan error, 1)
@@ -1069,7 +1069,7 @@ func MonitorBackupProgressWithSize(cmd *exec.Cmd, dbName, jobID string, dbSizeBy
 		return
 	}
 
-	LogInfo("📊 [BACKUP-MONITOR] Starting real progress monitoring for %s (PID: %d, DB Size: %.2f MB)",
+	LogDebug("📊 [BACKUP-MONITOR] Starting real progress monitoring for %s (PID: %d, DB Size: %.2f MB)",
 		dbName, process.Pid, float64(dbSizeBytes)/(1024*1024))
 
 	// Create a channel to receive process completion
@@ -1095,7 +1095,7 @@ func MonitorBackupProgressWithSize(cmd *exec.Cmd, dbName, jobID string, dbSizeBy
 				// Update job status to failed
 				UpdateBackupJobStatusByDB(jobID, dbName, "failed")
 			} else {
-				LogInfo("✅ [BACKUP-MONITOR] Backup process %s completed successfully", dbName)
+				LogDebug("✅ [BACKUP-MONITOR] Backup process %s completed successfully", dbName)
 				// Set final progress to 100%
 				UpdateBackupJobProgress(jobID, dbName, 100)
 				// Note: Don't update status to "done" here - let the main backup function handle completion
@@ -1368,7 +1368,7 @@ func optimizeDatabaseWithProgress(dbName, jobID string, config *Config) Database
 		}
 	}
 
-	LogInfo("✅ [OPTIMIZE-SUCCESS] Database optimization completed for %s in %v", dbName, duration)
+	LogDebug("✅ [OPTIMIZE-SUCCESS] Database optimization completed for %s in %v", dbName, duration)
 	return DatabaseOptimizeResult{
 		Success: true,
 	}
@@ -1376,7 +1376,7 @@ func optimizeDatabaseWithProgress(dbName, jobID string, config *Config) Database
 
 // optimizeDatabase runs mariadb-check/mysqlcheck to optimize database before backup (legacy function)
 func optimizeDatabase(dbName string, config *Config) DatabaseOptimizeResult {
-	LogInfo("🔧 [OPTIMIZE-START] Starting database optimization for %s", dbName)
+	LogDebug("🔧 [OPTIMIZE-START] Starting database optimization for %s", dbName)
 	LogDebug("🔧 [OPTIMIZE-CONFIG] Optimization settings - Binary: %s, Options: %s",
 		config.Database.BinaryCheck, config.Backup.MariadbCheckOptions)
 
@@ -1401,7 +1401,7 @@ func optimizeDatabase(dbName string, config *Config) DatabaseOptimizeResult {
 		}
 	}
 
-	LogInfo("✅ [OPTIMIZE-SUCCESS] Database optimization completed for %s in %v", dbName, duration)
+	LogDebug("✅ [OPTIMIZE-SUCCESS] Database optimization completed for %s in %v", dbName, duration)
 	return DatabaseOptimizeResult{
 		Success: true,
 	}
@@ -1444,7 +1444,7 @@ func buildWindowsOptimizeCommand(dbName string, config *Config) *exec.Cmd {
 	// Add database name
 	cmd.Args = append(cmd.Args, dbName)
 
-	LogInfo("Windows optimization command built for %s: %s", dbName, strings.Join(cmd.Args, " "))
+	LogDebug("Windows optimization command built for %s: %s", dbName, strings.Join(cmd.Args, " "))
 	return cmd
 }
 
@@ -1459,7 +1459,7 @@ func buildLinuxOptimizeCommand(dbName string, config *Config) *exec.Cmd {
 
 	cmd := exec.Command("sh", "-c", shellCmd)
 
-	LogInfo("Linux optimization command built for %s: %s", dbName, shellCmd)
+	LogDebug("Linux optimization command built for %s: %s", dbName, shellCmd)
 	return cmd
 }
 
@@ -1656,13 +1656,13 @@ func MonitorOptimizationProgressWithPipe(stdout io.ReadCloser, dbName, jobID str
 
 	stdout.Close()
 
-	LogInfo("✅ [OPTIMIZE-MONITOR] Optimization monitoring completed for %s: %d/%d tables processed",
+	LogDebug("✅ [OPTIMIZE-MONITOR] Optimization monitoring completed for %s: %d/%d tables processed",
 		dbName, processedTables, totalTables)
 }
 
 // MonitorOptimizationProgress monitors mysqlcheck output for real progress tracking
 func MonitorOptimizationProgress(cmd *exec.Cmd, dbName, jobID string, totalTables int) {
-	LogInfo("📊 [OPTIMIZE-MONITOR] Starting real-time progress monitoring for %s (%d tables)", dbName, totalTables)
+	LogDebug("📊 [OPTIMIZE-MONITOR] Starting real-time progress monitoring for %s (%d tables)", dbName, totalTables)
 
 	// FIXED: Don't call cmd.Start() here since it's already started
 	// Get the command's stdout pipe to read mysqlcheck output
@@ -1728,7 +1728,7 @@ func MonitorOptimizationProgress(cmd *exec.Cmd, dbName, jobID string, totalTable
 	}
 
 	// Note: Don't call cmd.Wait() here since it's handled by the caller
-	LogInfo("✅ [OPTIMIZE-MONITOR] Optimization monitoring completed for %s: %d/%d tables processed",
+	LogDebug("✅ [OPTIMIZE-MONITOR] Optimization monitoring completed for %s: %d/%d tables processed",
 		dbName, processedTables, totalTables)
 }
 

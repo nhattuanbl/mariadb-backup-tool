@@ -294,7 +294,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 							return
 						}
 					}
-					LogInfo("✅ [MEMORY] Memory threshold cleared, proceeding with %s", dbName)
+					LogDebug("✅ [MEMORY] Memory threshold cleared, proceeding with %s", dbName)
 				}
 
 				activeProcesses <- struct{}{}
@@ -306,7 +306,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 					return
 				}
 
-				LogInfo("🚀 [WORKER-%d] Starting incremental backup for database: %s", workerID, dbName)
+				LogDebug("🚀 [WORKER-%d] Starting incremental backup for database: %s", workerID, dbName)
 
 				// Get latest backup time for --start-datetime (incremental or full)
 				latestBackupTime, latestBackupFile, err := getLatestBackupTime(dbName, config)
@@ -336,7 +336,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 				mu.Lock()
 				currentActiveProcesses := config.Backup.Parallel - len(activeProcesses)
 				mu.Unlock()
-				LogInfo("📊 [PARALLEL-STATUS] Worker-%d starting %s, %d/%d processes currently active",
+				LogDebug("📊 [PARALLEL-STATUS] Worker-%d starting %s, %d/%d processes currently active",
 					workerID, dbName, currentActiveProcesses, config.Backup.Parallel)
 
 				// Memory management (same as full backup)
@@ -350,7 +350,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 					mu.Lock()
 					if mysqlRestartInProgress {
 						mu.Unlock()
-						LogInfo("⏳ [WORKER-%d] MySQL restart already in progress, waiting...", workerID)
+						LogDebug("⏳ [WORKER-%d] MySQL restart already in progress, waiting...", workerID)
 						for {
 							time.Sleep(5 * time.Second)
 							mu.Lock()
@@ -367,16 +367,16 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 						mysqlRestartInProgress = true
 						mu.Unlock()
 
-						LogInfo("⏳ [MEMORY] Waiting for all active backup processes to complete before MySQL restart...")
+						LogDebug("⏳ [MEMORY] Waiting for all active backup processes to complete before MySQL restart...")
 						for j := 0; j < config.Backup.Parallel; j++ {
 							activeProcesses <- struct{}{}
 						}
 						for j := 0; j < config.Backup.Parallel; j++ {
 							<-activeProcesses
 						}
-						LogInfo("✅ [MEMORY] All active processes completed, proceeding with MySQL restart")
+						LogDebug("✅ [MEMORY] All active processes completed, proceeding with MySQL restart")
 
-						LogInfo("🔄 [MYSQL-RESTART] Starting MySQL service restart with monitoring")
+						LogDebug("🔄 [MYSQL-RESTART] Starting MySQL service restart with monitoring")
 						if !restartMySQLServiceWithMonitoring(config, &abortBackup) {
 							LogError("❌ [MYSQL-RESTART] MySQL service restart failed, aborting all backup processes")
 
@@ -392,7 +392,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 							mu.Unlock()
 							return
 						}
-						LogInfo("✅ [MYSQL-RESTART] MySQL service restart completed successfully")
+						LogDebug("✅ [MYSQL-RESTART] MySQL service restart completed successfully")
 
 						mu.Lock()
 						mysqlRestartInProgress = false
@@ -413,7 +413,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 					return
 				}
 
-				LogInfo("💾 [BACKUP] Worker-%d: Starting mariadb-binlog incremental backup for database: %s", workerID, dbName)
+				LogDebug("💾 [BACKUP] Worker-%d: Starting mariadb-binlog incremental backup for database: %s", workerID, dbName)
 				backupResult := executeIncrementalDatabaseBackup(dbName, request.JobID, config, latestBackupTime)
 
 				LogDebug("🔒 [WORKER-%d] Setting job status to 'running' for %s", workerID, dbName)
@@ -430,7 +430,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 						LogWarn("⚠️ [DISK-SIZE] Failed to get disk size for %s: %v", dbName, err)
 					}
 
-					LogInfo("✅ [BACKUP-SUCCESS] Worker-%d: Incremental backup completed for %s - Size: %d KB, File: %s",
+					LogDebug("✅ [BACKUP-SUCCESS] Worker-%d: Incremental backup completed for %s - Size: %d KB, File: %s",
 						workerID, dbName, backupResult.SizeKB, backupResult.FilePath)
 				} else {
 					totalFailed++
@@ -449,7 +449,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 				mu.Lock()
 				currentActiveProcesses = config.Backup.Parallel - len(activeProcesses)
 				mu.Unlock()
-				LogInfo("📊 [PARALLEL-STATUS] Worker-%d completed %s, %d/%d processes currently active",
+				LogDebug("📊 [PARALLEL-STATUS] Worker-%d completed %s, %d/%d processes currently active",
 					workerID, dbName, currentActiveProcesses, config.Backup.Parallel)
 			}
 		}(i)
@@ -578,7 +578,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 	cmd := buildMariadbBinlogCommand(dbName, tempFilePath, config, startTime)
 
 	backupStartTime := startTime // Use the calculated start time, not current time
-	LogInfo("🚀 [EXECUTE] Starting mariadb-binlog process for %s", dbName)
+	LogDebug("🚀 [EXECUTE] Starting mariadb-binlog process for %s", dbName)
 	LogDebug("📅 [TIMING] Backup start time set to: %s", backupStartTime.Format("2006-01-02 15:04:05.000000"))
 
 	stdout, err := cmd.StdoutPipe()
@@ -676,7 +676,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 			return
 		}
 
-		LogInfo("✅ [INC-BACKUP-MONITOR] Incremental backup monitoring completed for %s: %d events processed",
+		LogDebug("✅ [INC-BACKUP-MONITOR] Incremental backup monitoring completed for %s: %d events processed",
 			dbName, processedEvents)
 	}()
 
@@ -737,7 +737,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 			ErrorMessage: errorMessage,
 		}
 	}
-	LogInfo("✅ [EXECUTE] Mariadb-binlog process completed successfully for %s in %v", dbName, duration)
+	LogDebug("✅ [EXECUTE] Mariadb-binlog process completed successfully for %s in %v", dbName, duration)
 
 	// Generate final filename with backup end time
 	backupEndTime := time.Now()
@@ -800,7 +800,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 	}
 
 	if backupSuccess {
-		LogInfo("🎉 [INC-BACKUP-SUCCESS] Incremental database backup completed successfully - DB: %s, Size: %d KB, Duration: %v, File: %s",
+		LogDebug("🎉 [INC-BACKUP-SUCCESS] Incremental database backup completed successfully - DB: %s, Size: %d KB, Duration: %v, File: %s",
 			dbName, sizeKB, duration, finalFilePath)
 	} else {
 		LogWarn("⚠️ [INC-BACKUP-PARTIAL] Incremental database backup completed with issues - DB: %s, Size: %d KB, Duration: %v, File: %s, Error: %s",
@@ -871,7 +871,7 @@ func buildWindowsBinlogCommand(dbName, outputPath string, config *Config, startT
 	// Set output file - let the command handle file creation
 	cmd.Stdout = nil // Will be set to the file when command starts
 
-	LogInfo("Windows mariadb-binlog command built for %s: %s", dbName, strings.Join(cmd.Args, " "))
+	LogDebug("Windows mariadb-binlog command built for %s: %s", dbName, strings.Join(cmd.Args, " "))
 	return cmd
 }
 
@@ -907,7 +907,7 @@ func buildLinuxCompressedBinlogCommand(dbName, outputPath string, config *Config
 
 	cmd := exec.Command("sh", "-c", shellCmd)
 
-	LogInfo("Linux compressed mariadb-binlog command built for %s: %s", dbName, shellCmd)
+	LogDebug("Linux compressed mariadb-binlog command built for %s: %s", dbName, shellCmd)
 	return cmd
 }
 
@@ -926,7 +926,7 @@ func buildLinuxUncompressedBinlogCommand(dbName, outputPath string, config *Conf
 
 	cmd := exec.Command("sh", "-c", shellCmd)
 
-	LogInfo("Linux uncompressed mariadb-binlog command built for %s: %s", dbName, shellCmd)
+	LogDebug("Linux uncompressed mariadb-binlog command built for %s: %s", dbName, shellCmd)
 	return cmd
 }
 
