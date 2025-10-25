@@ -140,77 +140,10 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 
 				// Check memory threshold before acquiring process slot (Linux only)
 				if runtime.GOOS == "linux" && shouldRestartMySQL(config) {
-					LogWarn("⚠️ [MEMORY] Memory threshold exceeded (%.2f%% > %d%%), waiting for memory to be freed before starting %s",
+					LogWarn("⚠️ [MEMORY] Memory threshold exceeded (%.2f%% > %d%%), initiating MySQL restart before starting %s",
 						getCurrentMemoryUsage(), config.Backup.MaxMemoryThreshold, dbName)
 
-					// Wait for memory to be freed or MySQL restart to complete with 10-minute timeout
-					memoryTimeoutStart := time.Now()
-					memoryTimeoutDuration := 10 * time.Minute
-
-					for shouldRestartMySQL(config) {
-						// Check if we've exceeded the 10-minute timeout
-						if time.Since(memoryTimeoutStart) > memoryTimeoutDuration {
-							LogError("❌ [MEMORY-TIMEOUT] Memory threshold exceeded for more than 10 minutes, marking process as failed and stopping all backups")
-
-							// Mark this database as failed due to timeout
-							updateErr := CompleteBackupJob(request.JobID, dbName, false, 0, "", "Memory threshold exceeded for more than 10 minutes - process failed")
-							if updateErr != nil {
-								LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
-							}
-
-							// Signal global abort to stop all backup processes
-							SignalGlobalBackupAbort()
-							return
-						}
-
-						time.Sleep(5 * time.Second)
-						if CheckGlobalBackupAbort() {
-							LogWarn("⚠️ [WORKER-%d] Backup aborted while waiting for memory threshold", workerID)
-							return
-						}
-					}
-					LogDebug("✅ [MEMORY] Memory threshold cleared, proceeding with %s", dbName)
-				}
-
-				activeProcesses <- struct{}{}
-
-				// Check for global abort before starting backup
-				if CheckGlobalBackupAbort() {
-					LogWarn("⚠️ [WORKER-%d] Backup aborted before starting %s", workerID, dbName)
-					<-activeProcesses
-					return
-				}
-
-				LogDebug("🚀 [WORKER-%d] Starting full backup for database: %s", workerID, dbName)
-
-				estimatedSizeKB := 0
-				if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
-					estimatedSizeKB = int(dbSizeBytes / 1024)
-				} else {
-					LogWarn("⚠️ [ESTIMATE] Failed to get estimated size for %s: %v", dbName, err)
-				}
-
-				err := CreateBackupJob(request.JobID, dbName, backupType, estimatedSizeKB)
-				if err != nil {
-					LogError("❌ [SQLITE-ERROR] Failed to create job for %s: %v", dbName, err)
-				} else {
-					LogDebug("✅ [SQLITE] Job record created for %s", dbName)
-					go broadcastJobsUpdate()
-				}
-
-				mu.Lock()
-				currentActiveProcesses := config.Backup.Parallel - len(activeProcesses)
-				mu.Unlock()
-				LogDebug("📊 [PARALLEL-STATUS] Worker-%d starting %s, %d/%d processes currently active",
-					workerID, dbName, currentActiveProcesses, config.Backup.Parallel)
-
-				if shouldRestartMySQL(config) {
-					LogWarn("⚠️ [MEMORY] Memory threshold exceeded (%.2f%% > %d%%), scheduling MySQL restart",
-						getCurrentMemoryUsage(), config.Backup.MaxMemoryThreshold)
-
-					LogDebug("🔓 [WORKER-%d] Releasing process slot temporarily for MySQL restart", workerID)
-					<-activeProcesses
-
+					// Check if MySQL restart is already in progress
 					mu.Lock()
 					if mysqlRestartInProgress {
 						mu.Unlock()
@@ -224,9 +157,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 							}
 							mu.Unlock()
 						}
-
-						LogDebug("🔒 [WORKER-%d] Re-acquiring process slot after MySQL restart", workerID)
-						activeProcesses <- struct{}{}
+						LogDebug("✅ [WORKER-%d] MySQL restart completed, proceeding with %s", workerID, dbName)
 					} else {
 						mysqlRestartInProgress = true
 						mu.Unlock()
@@ -262,13 +193,44 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						mysqlRestartInProgress = false
 						mu.Unlock()
 
-						LogDebug("🔒 [WORKER-%d] Re-acquiring process slot after MySQL restart", workerID)
-						activeProcesses <- struct{}{}
+						LogDebug("✅ [MEMORY] Memory threshold cleared after MySQL restart, proceeding with %s", dbName)
 					}
-				} else {
-					LogDebug("✅ [MEMORY] Memory usage OK (%.2f%% <= %d%%), proceeding with backup",
-						getCurrentMemoryUsage(), config.Backup.MaxMemoryThreshold)
 				}
+
+				activeProcesses <- struct{}{}
+
+				// Check for global abort before starting backup
+				if CheckGlobalBackupAbort() {
+					LogWarn("⚠️ [WORKER-%d] Backup aborted before starting %s", workerID, dbName)
+					<-activeProcesses
+					return
+				}
+
+				LogDebug("🚀 [WORKER-%d] Starting full backup for database: %s", workerID, dbName)
+
+				estimatedSizeKB := 0
+				if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
+					estimatedSizeKB = int(dbSizeBytes / 1024)
+				} else {
+					LogWarn("⚠️ [ESTIMATE] Failed to get estimated size for %s: %v", dbName, err)
+				}
+
+				err := CreateBackupJob(request.JobID, dbName, backupType, estimatedSizeKB)
+				if err != nil {
+					LogError("❌ [SQLITE-ERROR] Failed to create job for %s: %v", dbName, err)
+				} else {
+					LogDebug("✅ [SQLITE] Job record created for %s", dbName)
+					go broadcastJobsUpdate()
+				}
+
+				mu.Lock()
+				currentActiveProcesses := config.Backup.Parallel - len(activeProcesses)
+				mu.Unlock()
+				LogDebug("📊 [PARALLEL-STATUS] Worker-%d starting %s, %d/%d processes currently active",
+					workerID, dbName, currentActiveProcesses, config.Backup.Parallel)
+
+				LogDebug("✅ [MEMORY] Memory usage OK (%.2f%% <= %d%%), proceeding with backup",
+					getCurrentMemoryUsage(), config.Backup.MaxMemoryThreshold)
 
 				if config.Backup.OptimizeTables {
 					// Check for global abort before optimization
