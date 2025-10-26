@@ -7236,6 +7236,33 @@ hr {
     margin-left: 20px;
 }
 
+/* Highlighting styles for selected backups */
+.backup-group.highlighted-backup-group {
+    border: 2px solid #007bff;
+    background: #e7f3ff;
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.2);
+    animation: highlightPulse 0.6s ease-in-out;
+}
+
+.backup-item.incremental-backup.highlighted-backup-item {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    box-shadow: 0 2px 8px rgba(255, 193, 7, 0.3);
+    animation: highlightPulse 0.6s ease-in-out;
+}
+
+@keyframes highlightPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(0, 123, 255, 0.4);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(0, 123, 255, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(0, 123, 255, 0);
+    }
+}
+
 .backup-info {
     display: flex;
     gap: 15px;

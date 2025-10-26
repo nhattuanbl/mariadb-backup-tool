@@ -180,7 +180,7 @@ function displayBackupHistory(jobs, pagination) {
         const backupPath = job.backup_file_path || '';
         
         html += `
-            <tr onclick="openBackupHistoryModal('${job.database_name}')" style="cursor: pointer;">
+            <tr onclick="openBackupHistoryModal('${job.database_name}', '${backupPath}', '${job.backup_type}')" style="cursor: pointer;">
                 <td title="Job ID: ${job.job_id}" class="small-text">${job.id}</td>
                 <td class="small-text">${job.database_name}</td>
                 <td class="text-center">${typeIcon}</td>
@@ -242,7 +242,7 @@ function getStatusBadge(status) {
 
 // Action buttons removed - no longer needed
 
-function openBackupHistoryModal(databaseName) {
+function openBackupHistoryModal(databaseName, backupFilePath = '', backupType = '') {
     const modal = document.getElementById('backup-history-modal');
     const title = document.getElementById('backup-history-title');
     const content = document.getElementById('backup-history-content');
@@ -251,6 +251,10 @@ function openBackupHistoryModal(databaseName) {
         console.error('Backup history modal elements not found');
         return;
     }
+    
+    // Store the selected backup information for highlighting
+    window.selectedBackupPath = backupFilePath;
+    window.selectedBackupType = backupType;
     
     // Update title
     title.textContent = `📊 Backup History - ${databaseName}`;
@@ -347,8 +351,35 @@ function displayBackupGroups(groups, databaseName, pagination, totalGroups) {
         const backupPath = fullBackup.file_path || '';
         const fileName = fullBackup.file_name || 'Unknown file';
         
+        // Check if this is the selected backup or belongs to selected backup's group
+        let shouldHighlightGroup = false;
+        let selectedIncIndex = -1;
+        
+        if (window.selectedBackupPath) {
+            const normalizePath = (path) => path.replace(/\\/g, '/').replace(/\/+/g, '/');
+            const selectedPath = normalizePath(window.selectedBackupPath);
+            const groupPath = normalizePath(backupPath);
+            
+            // Check if the full backup is selected
+            if (selectedPath === groupPath) {
+                shouldHighlightGroup = true;
+            }
+            
+            // Check if any incremental backup is selected
+            incrementalBackups.forEach((incBackup, incIndex) => {
+                const incPath = normalizePath(incBackup.file_path || '');
+                if (selectedPath === incPath) {
+                    shouldHighlightGroup = true;
+                    selectedIncIndex = incIndex;
+                }
+            });
+        }
+        
+        // Add highlighting class if needed
+        const highlightClass = shouldHighlightGroup ? ' highlighted-backup-group' : '';
+        
         html += `
-            <div class="backup-group">
+            <div class="backup-group${highlightClass}">
                 <div class="group-header" onclick="toggleGroup(${index})">
                     <div class="group-info">
                         <span class="backup-type-icon">🔄</span>
@@ -378,15 +409,18 @@ function displayBackupGroups(groups, databaseName, pagination, totalGroups) {
         
         // Add incremental backups
         if (incrementalBackups.length > 0) {
-            incrementalBackups.forEach(incBackup => {
+            incrementalBackups.forEach((incBackup, incIndex) => {
                 const incDate = formatDateTime(incBackup.timestamp);
                 const incSize = formatFileSize(incBackup.file_size);
                 const incDuration = '-'; // No duration available from files
                 const incBackupPath = incBackup.file_path || '';
                 const incFileName = incBackup.file_name || 'Unknown file';
                 
+                // Check if this incremental backup should be highlighted
+                const incHighlightClass = (incIndex === selectedIncIndex) ? ' highlighted-backup-item' : '';
+                
                 html += `
-                        <div class="backup-item incremental-backup">
+                        <div class="backup-item incremental-backup${incHighlightClass}">
                             <div class="backup-info">
                                 <span class="backup-type-icon">⚡</span>
                                 <span class="backup-type">Incremental</span>
@@ -424,6 +458,68 @@ function displayBackupGroups(groups, databaseName, pagination, totalGroups) {
     
     // Add event listeners for download buttons
     addDownloadButtonListeners();
+    
+    // Auto-expand and scroll to highlighted backup if one is selected
+    if (window.selectedBackupPath) {
+        let highlightedGroupIndex = -1;
+        let highlightedIncIndex = -1;
+        
+        // Find the highlighted group and backup
+        groups.forEach((group, groupIndex) => {
+            const fullBackup = group.full_backup;
+            const incrementalBackups = group.incremental_backups || [];
+            
+            if (window.selectedBackupPath) {
+                const normalizePath = (path) => path.replace(/\\/g, '/').replace(/\/+/g, '/');
+                const selectedPath = normalizePath(window.selectedBackupPath);
+                const groupPath = normalizePath(fullBackup.file_path || '');
+                
+                // Check if the full backup is selected
+                if (selectedPath === groupPath) {
+                    highlightedGroupIndex = groupIndex;
+                }
+                
+                // Check if any incremental backup is selected
+                incrementalBackups.forEach((incBackup, incIndex) => {
+                    const incPath = normalizePath(incBackup.file_path || '');
+                    if (selectedPath === incPath) {
+                        highlightedGroupIndex = groupIndex;
+                        highlightedIncIndex = incIndex;
+                    }
+                });
+            }
+        });
+        
+        // Auto-expand and scroll to highlighted group
+        if (highlightedGroupIndex >= 0) {
+            setTimeout(() => {
+                // Auto-expand the highlighted group
+                const details = document.getElementById(`details-${highlightedGroupIndex}`);
+                const toggle = document.getElementById(`toggle-${highlightedGroupIndex}`);
+                
+                if (details && toggle) {
+                    details.style.display = 'block';
+                    toggle.textContent = '▲';
+                    
+                    // Scroll to the highlighted group with some offset
+                    const groupElement = details.closest('.backup-group');
+                    if (groupElement) {
+                        groupElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        
+                        // If it's an incremental backup, scroll to it within the group
+                        if (highlightedIncIndex >= 0) {
+                            setTimeout(() => {
+                                const highlightedInc = document.querySelector(`#details-${highlightedGroupIndex} .backup-item.incremental-backup:nth-child(${highlightedIncIndex + 1})`);
+                                if (highlightedInc) {
+                                    highlightedInc.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }
+                            }, 300);
+                        }
+                    }
+                }
+            }, 100);
+        }
+    }
     
     // Update modal footer with pagination
     updateModalFooter(pagination, totalGroups);

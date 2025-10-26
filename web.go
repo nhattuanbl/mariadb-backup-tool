@@ -155,6 +155,7 @@ func setupRoutes(config *Config) {
 	http.HandleFunc("/api/backup/download/", requireAuth(handleDownloadBackup))
 	http.HandleFunc("/api/backup/download-file", requireAuth(handleDownloadBackupFile))
 	http.HandleFunc("/api/backup/download-group-zip", requireAuth(handleDownloadBackupGroupZip))
+	http.HandleFunc("/api/backup/delete-group", requireAuth(handleDeleteBackupGroup))
 	http.HandleFunc("/api/logging/status", requireAuth(handleLoggingStatus))
 	http.HandleFunc("/api/logs/stream", requireAuth(handleLogStream))
 	http.HandleFunc("/api/logs/delete", requireAuth(handleDeleteLogFile))
@@ -1733,6 +1734,104 @@ func handleDownloadBackupGroupZip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	LogInfo("Created ZIP file %s with %d files for database %s", zipFileName, len(allPaths), requestData.DatabaseName)
+}
+
+// handleDeleteBackupGroup handles deleting a full backup and all its incremental backups
+func handleDeleteBackupGroup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var requestData struct {
+		FullBackupPath   string   `json:"full_backup_path"`
+		FullBackupName   string   `json:"full_backup_name"`
+		IncrementalPaths []string `json:"incremental_paths"`
+		DatabaseName     string   `json:"database_name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	// Load current config
+	config, err := loadConfig("config.json")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Failed to load config",
+		})
+		return
+	}
+
+	// Security check: ensure all files are within the backup directory
+	backupDir := config.Backup.BackupDir
+	allPaths := append([]string{requestData.FullBackupPath}, requestData.IncrementalPaths...)
+
+	LogInfo("Checking delete file paths for database %s", requestData.DatabaseName)
+
+	for i, filePath := range allPaths {
+		LogInfo("Checking file %d: %s", i+1, filePath)
+
+		// Normalize paths for comparison
+		normalizedFilePath := filepath.Clean(filePath)
+		normalizedBackupDir := filepath.Clean(backupDir)
+
+		if !strings.HasPrefix(normalizedFilePath, normalizedBackupDir) {
+			LogWarn("Access denied: file %s is outside backup directory %s", normalizedFilePath, normalizedBackupDir)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"error":   "Access denied: file outside backup directory",
+			})
+			return
+		}
+	}
+
+	// Delete files
+	deletedFiles := 0
+	var errors []string
+	var deletedFilePaths []string
+
+	for _, filePath := range allPaths {
+		if err := os.Remove(filePath); err != nil {
+			LogError("Failed to delete file %s: %v", filePath, err)
+			errors = append(errors, fmt.Sprintf("Failed to delete %s: %v", filepath.Base(filePath), err))
+		} else {
+			deletedFiles++
+			deletedFilePaths = append(deletedFilePaths, filePath)
+			LogInfo("Successfully deleted file: %s", filePath)
+		}
+	}
+
+	if len(errors) > 0 {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":       false,
+			"error":         "Some files could not be deleted",
+			"deleted_files": deletedFiles,
+			"errors":        errors,
+		})
+		return
+	}
+
+	LogInfo("Successfully deleted %d backup files for database %s", deletedFiles, requestData.DatabaseName)
+
+	// Create deletion log for UI-initiated deletion
+	if len(deletedFilePaths) > 0 {
+		createDeletionLog(deletedFilePaths, "manual_deletion")
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":       true,
+		"message":       fmt.Sprintf("Successfully deleted %d backup file(s)", deletedFiles),
+		"deleted_files": deletedFiles,
+	})
 }
 
 // addFileToZip adds a file to the ZIP archive

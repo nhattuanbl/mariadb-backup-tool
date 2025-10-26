@@ -277,6 +277,54 @@ func (l *Logger) cleanupOldLogs() error {
 	return nil
 }
 
+// createDeletionLog creates a log file for deleted backup files
+func createDeletionLog(deletedFiles []string, reason string) {
+	if len(deletedFiles) == 0 {
+		return
+	}
+
+	// Create log filename with timestamp: mbt-deleted-YYYYMMDD_HHMMSS.log
+	timestamp := time.Now().Format("20060102_150405")
+	logFileName := fmt.Sprintf("mbt-deleted-%s.log", timestamp)
+
+	// Use the same log directory as the main logger
+	var logDir string
+	if appLogger != nil {
+		logDir = appLogger.logDir
+	} else {
+		// Fallback to current directory if logger not initialized
+		logDir = "."
+	}
+
+	logFilePath := filepath.Join(logDir, logFileName)
+
+	// Create the log file
+	file, err := os.Create(logFilePath)
+	if err != nil {
+		LogError("Failed to create deletion log file %s: %v", logFilePath, err)
+		return
+	}
+	defer file.Close()
+
+	// Write header
+	header := fmt.Sprintf("# MariaDB Backup Tool - Deletion Log\n")
+	header += fmt.Sprintf("# Created: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	header += fmt.Sprintf("# Reason: %s\n", reason)
+	header += fmt.Sprintf("# Total files deleted: %d\n", len(deletedFiles))
+	header += fmt.Sprintf("#\n")
+	header += fmt.Sprintf("# Deleted files:\n")
+
+	file.WriteString(header)
+
+	// Write each deleted file
+	for i, filePath := range deletedFiles {
+		entry := fmt.Sprintf("%d. %s\n", i+1, filePath)
+		file.WriteString(entry)
+	}
+
+	LogInfo("Created deletion log: %s (%d files)", logFileName, len(deletedFiles))
+}
+
 // Logging methods
 func (l *Logger) Debug(format string, v ...interface{}) {
 	l.checkAndRotateLogFile()
