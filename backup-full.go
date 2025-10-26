@@ -523,7 +523,7 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 				if updateErr != nil {
 					LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
 				}
-				stdout.Close()
+				// Don't close stdout here - let the main function handle it
 				return
 			}
 
@@ -616,20 +616,27 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 			if strings.Contains(err.Error(), "token too long") {
 				errorMessage = "Scanner error: Line too long (max 64MB). This usually happens with large INSERT statements or binary data. Consider using --single-transaction=false or reducing --max_allowed_packet"
 				LogError("❌ [BACKUP-MONITOR] Scanner error for %s: %s", dbName, errorMessage)
+			} else if strings.Contains(err.Error(), "file already closed") {
+				// Handle the specific "file already closed" error gracefully
+				LogWarn("⚠️ [BACKUP-MONITOR] Scanner detected closed pipe for %s (this is normal when process completes)", dbName)
+				LogDebug("✅ [BACKUP-MONITOR] Backup monitoring completed for %s: %d/%d tables processed (pipe closed)",
+					dbName, processedTables, totalTables)
+				return
 			} else {
 				errorMessage = fmt.Sprintf("Scanner error: %v", err)
 				LogError("❌ [BACKUP-MONITOR] Scanner error for %s: %v", dbName, err)
 			}
 
-			// Update job status to failed and stop the backup process
-			LogError("❌ [BACKUP-ERROR] Backup failed for %s due to scanner error, updating job status to failed", dbName)
-			updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", errorMessage)
-			if updateErr != nil {
-				LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+			// Only update job status to failed if it's not a "file already closed" error
+			if !strings.Contains(err.Error(), "file already closed") {
+				// Update job status to failed and stop the backup process
+				LogError("❌ [BACKUP-ERROR] Backup failed for %s due to scanner error, updating job status to failed", dbName)
+				updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", errorMessage)
+				if updateErr != nil {
+					LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+				}
 			}
-
-			// Close the stdout pipe to stop the mysqldump process
-			stdout.Close()
+			// Don't close stdout here - let the main function handle it
 			return
 		}
 

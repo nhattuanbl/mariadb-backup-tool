@@ -604,7 +604,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 				if updateErr != nil {
 					LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
 				}
-				stdout.Close()
+				// Don't close stdout here - let the main function handle it
 				return
 			}
 
@@ -620,20 +620,27 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 			if strings.Contains(err.Error(), "token too long") {
 				errorMessage = "Scanner error: Line too long (max 64MB). This usually happens with large binlog events."
 				LogError("❌ [INC-BACKUP-MONITOR] Scanner error for %s: %s", dbName, errorMessage)
+			} else if strings.Contains(err.Error(), "file already closed") {
+				// Handle the specific "file already closed" error gracefully
+				LogWarn("⚠️ [INC-BACKUP-MONITOR] Scanner detected closed pipe for %s (this is normal when process completes)", dbName)
+				LogDebug("✅ [INC-BACKUP-MONITOR] Incremental backup monitoring completed for %s: %d events processed (pipe closed)",
+					dbName, processedEvents)
+				return
 			} else {
 				errorMessage = fmt.Sprintf("Scanner error: %v", err)
 				LogError("❌ [INC-BACKUP-MONITOR] Scanner error for %s: %v", dbName, err)
 			}
 
-			// Update job status to failed and stop the backup process
-			LogError("❌ [BACKUP-ERROR] Incremental backup failed for %s due to scanner error, updating job status to failed", dbName)
-			updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", errorMessage)
-			if updateErr != nil {
-				LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+			// Only update job status to failed if it's not a "file already closed" error
+			if !strings.Contains(err.Error(), "file already closed") {
+				// Update job status to failed and stop the backup process
+				LogError("❌ [BACKUP-ERROR] Incremental backup failed for %s due to scanner error, updating job status to failed", dbName)
+				updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", errorMessage)
+				if updateErr != nil {
+					LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+				}
 			}
-
-			// Close the stdout pipe to stop the mariadb-binlog process
-			stdout.Close()
+			// Don't close stdout here - let the main function handle it
 			return
 		}
 
