@@ -83,6 +83,27 @@ window.initBackupHistory = function() {
             loadBackupHistory();
         });
     }
+    
+    // Apply URL parameters if they exist (from dashboard redirect)
+    if (window.urlParameters) {
+        const { jobId, status } = window.urlParameters;
+        
+        if (jobId) {
+            window.currentJobId = jobId;
+            currentPage = 1;
+        }
+        
+        if (status) {
+            currentStatus = status;
+            currentPage = 1;
+        }
+        
+        // Apply the filters and reload
+        loadBackupHistory();
+        
+        // Clear the stored parameters to avoid re-applying them
+        window.urlParameters = null;
+    }
 };
 
 function resetFilters() {
@@ -344,6 +365,9 @@ function displayBackupGroups(groups, databaseName, pagination, totalGroups) {
                         <button class="btn btn-sm btn-success zip-btn" data-group-index="${index}" title="Download full backup with all incremental backups as ZIP">
                             📦 ZIP
                         </button>
+                        <button class="btn btn-sm btn-danger delete-btn" data-group-index="${index}" title="Delete full backup and all incremental backups">
+                            🗑️ Delete
+                        </button>
                         <span class="group-toggle" id="toggle-${index}">▼</span>
                     </div>
                 </div>
@@ -483,6 +507,18 @@ function addDownloadButtonListeners() {
             const groupIndex = this.getAttribute('data-group-index');
             if (groupIndex !== null) {
                 downloadBackupGroupAsZip(parseInt(groupIndex));
+            }
+        });
+    });
+    
+    // Add event listeners for delete buttons
+    const deleteButtons = document.querySelectorAll('.delete-btn');
+    deleteButtons.forEach(button => {
+        button.addEventListener('click', function(e) {
+            e.stopPropagation(); // Prevent group toggle
+            const groupIndex = this.getAttribute('data-group-index');
+            if (groupIndex !== null) {
+                deleteBackupGroup(parseInt(groupIndex));
             }
         });
     });
@@ -630,6 +666,81 @@ function downloadBackupGroupAsZip(groupIndex) {
         console.error('Error downloading ZIP:', error);
         if (typeof showToast === 'function') {
             showToast('Error creating ZIP file: ' + error.message, 'error');
+        }
+    });
+}
+
+function deleteBackupGroup(groupIndex) {
+    // Get the group data from the current page
+    const groupElement = document.querySelector(`[data-group-index="${groupIndex}"]`).closest('.backup-group');
+    if (!groupElement) {
+        console.error('Group element not found for index:', groupIndex);
+        return;
+    }
+    
+    // Extract file paths from the group
+    const fullBackupButton = groupElement.querySelector('.download-btn');
+    const fullBackupPath = fullBackupButton.getAttribute('data-file-path');
+    const fullBackupName = fullBackupButton.getAttribute('data-file-name');
+    
+    // Get all incremental backup file paths
+    const incButtons = groupElement.querySelectorAll('.backup-item .download-btn');
+    const incFilePaths = Array.from(incButtons).map(btn => btn.getAttribute('data-file-path'));
+    
+    // Count total files to be deleted
+    const totalFiles = 1 + incFilePaths.length; // 1 full backup + incremental backups
+    
+    // Show confirmation dialog
+    const confirmMessage = `Are you sure you want to delete this backup group?\n\n` +
+        `This will permanently delete:\n` +
+        `• 1 full backup file\n` +
+        `• ${incFilePaths.length} incremental backup file(s)\n\n` +
+        `This action cannot be undone!`;
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    // Create the request data
+    const requestData = {
+        full_backup_path: fullBackupPath,
+        full_backup_name: fullBackupName,
+        incremental_paths: incFilePaths,
+        database_name: currentModalDatabaseName
+    };
+    
+    // Show loading state
+    if (typeof showToast === 'function') {
+        showToast('Deleting backup group...', 'info');
+    }
+    
+    // Send request to backend
+    fetch('/api/backup/delete-group', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestData)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            if (typeof showToast === 'function') {
+                showToast(`Successfully deleted ${data.deleted_files} backup file(s)`, 'success');
+            }
+            
+            // Reload the backup groups to reflect the changes
+            loadDatabaseBackupGroups(currentModalDatabaseName, currentModalPage);
+        } else {
+            if (typeof showToast === 'function') {
+                showToast('Error deleting backup group: ' + data.error, 'error');
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Error deleting backup group:', error);
+        if (typeof showToast === 'function') {
+            showToast('Error deleting backup group: ' + error.message, 'error');
         }
     });
 }

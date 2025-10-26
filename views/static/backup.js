@@ -96,6 +96,8 @@ function handleURLParameters() {
         if (jobFilter) {
             jobFilter.value = jobId;
         }
+        // Set the global currentJobId for history.js
+        window.currentJobId = jobId;
     }
     
     if (status) {
@@ -105,14 +107,9 @@ function handleURLParameters() {
         }
     }
     
-    // If we have filters, load the backup history with them applied
+    // Store the URL parameters for later use when history system is initialized
     if (jobId || status) {
-        // Small delay to ensure the page is fully loaded
-        setTimeout(() => {
-            if (typeof loadBackupHistory === 'function') {
-                loadBackupHistory();
-            }
-        }, 100);
+        window.urlParameters = { jobId, status };
     }
 }
 
