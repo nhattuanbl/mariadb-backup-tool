@@ -3,16 +3,46 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 var db *sql.DB
+var dbMutex sync.RWMutex
+var operationQueue chan func()
+var queueWorkerStarted bool
+
+// Batch update system for progress updates
+type ProgressUpdate struct {
+	JobID        string
+	DatabaseName string
+	Progress     int
+	Timestamp    time.Time
+}
+
+var progressUpdateQueue chan ProgressUpdate
+var progressBatchSize = 10
+var progressBatchTimeout = 2 * time.Second
+
+// Database operation metrics
+type DatabaseMetrics struct {
+	TotalOperations   int64
+	FailedOperations  int64
+	RetryOperations   int64
+	LockContentionOps int64
+	BatchOperations   int64
+	LastResetTime     time.Time
+	mutex             sync.RWMutex
+}
+
+var dbMetrics DatabaseMetrics
 
 func InitDB(dbFile string) error {
 	var err error
@@ -22,20 +52,24 @@ func InitDB(dbFile string) error {
 	}
 
 	// Configure connection pool for better concurrency
-	db.SetMaxOpenConns(25)   // Allow up to 25 concurrent connections
-	db.SetMaxIdleConns(10)   // Keep 10 idle connections ready
+	db.SetMaxOpenConns(50)   // Increased from 25 to handle more concurrent operations
+	db.SetMaxIdleConns(20)   // Increased from 10 to keep more connections ready
 	db.SetConnMaxLifetime(0) // Connections don't expire
 
-	// Configure SQLite for better concurrency
+	// Configure SQLite for better concurrency and reduced locking
 	concurrencySettings := []string{
 		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",            // WAL mode allows concurrent reads
-		"PRAGMA synchronous = NORMAL",          // Faster than FULL, still safe
-		"PRAGMA cache_size = 10000",            // Increase cache size
-		"PRAGMA temp_store = MEMORY",           // Store temp tables in memory
-		"PRAGMA busy_timeout = 30000",          // 30 second timeout for locks
-		"PRAGMA wal_autocheckpoint = 1000",     // Checkpoint every 1000 pages
-		"PRAGMA journal_size_limit = 67108864", // 64MB journal size limit
+		"PRAGMA journal_mode = WAL",             // WAL mode allows concurrent reads
+		"PRAGMA synchronous = NORMAL",           // Faster than FULL, still safe
+		"PRAGMA cache_size = 20000",             // Increased cache size for better performance
+		"PRAGMA temp_store = MEMORY",            // Store temp tables in memory
+		"PRAGMA busy_timeout = 60000",           // Increased to 60 seconds for locks
+		"PRAGMA wal_autocheckpoint = 2000",      // Increased checkpoint frequency
+		"PRAGMA journal_size_limit = 134217728", // Increased to 128MB journal size limit
+		"PRAGMA mmap_size = 268435456",          // 256MB memory-mapped I/O
+		"PRAGMA page_size = 4096",               // Standard page size
+		"PRAGMA locking_mode = NORMAL",          // Allow multiple readers
+		"PRAGMA read_uncommitted = 1",           // Allow dirty reads to reduce blocking
 	}
 
 	for _, setting := range concurrencySettings {
@@ -49,8 +83,188 @@ func InitDB(dbFile string) error {
 		return fmt.Errorf("failed to create tables: %v", err)
 	}
 
-	LogInfo("SQLite database initialized at %s", dbFile)
+	// Initialize operation queue for serializing critical database operations
+	operationQueue = make(chan func(), 1000) // Buffer for 1000 operations
+	startQueueWorker()
+
+	// Initialize progress update batching system
+	progressUpdateQueue = make(chan ProgressUpdate, 500) // Buffer for 500 progress updates
+	startProgressBatchWorker()
+
+	// Initialize metrics
+	dbMetrics.LastResetTime = time.Now()
+
+	LogInfo("SQLite database initialized at %s with enhanced concurrency settings", dbFile)
 	return nil
+}
+
+// startQueueWorker starts a background worker to process database operations serially
+func startQueueWorker() {
+	if queueWorkerStarted {
+		return
+	}
+	queueWorkerStarted = true
+
+	go func() {
+		for operation := range operationQueue {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						LogError("Database operation panic recovered: %v", r)
+					}
+				}()
+				operation()
+			}()
+		}
+	}()
+}
+
+// executeWithRetry executes a database operation with exponential backoff and jitter
+func executeWithRetry(operation func() error, operationName string, maxRetries int) error {
+	if maxRetries <= 0 {
+		maxRetries = 5
+	}
+
+	// Record operation start
+	dbMetrics.mutex.Lock()
+	dbMetrics.TotalOperations++
+	dbMetrics.mutex.Unlock()
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := operation()
+		if err == nil {
+			return nil // Success
+		}
+
+		// Check if it's a locking error
+		if strings.Contains(err.Error(), "database is locked") ||
+			strings.Contains(err.Error(), "SQLITE_BUSY") {
+
+			// Record lock contention
+			dbMetrics.mutex.Lock()
+			dbMetrics.LockContentionOps++
+			if attempt > 1 {
+				dbMetrics.RetryOperations++
+			}
+			dbMetrics.mutex.Unlock()
+
+			if attempt == maxRetries {
+				dbMetrics.mutex.Lock()
+				dbMetrics.FailedOperations++
+				dbMetrics.mutex.Unlock()
+				return fmt.Errorf("%s failed after %d attempts: %v", operationName, maxRetries, err)
+			}
+
+			// Exponential backoff with jitter
+			baseDelay := time.Duration(attempt) * 100 * time.Millisecond
+			jitter := time.Duration(rand.Intn(50)) * time.Millisecond
+			delay := baseDelay + jitter
+
+			LogWarn("%s attempt %d failed due to lock contention, retrying in %v: %v",
+				operationName, attempt, delay, err)
+			time.Sleep(delay)
+			continue
+		}
+
+		// For non-locking errors, record failure and return immediately
+		dbMetrics.mutex.Lock()
+		dbMetrics.FailedOperations++
+		dbMetrics.mutex.Unlock()
+		return fmt.Errorf("%s failed: %v", operationName, err)
+	}
+
+	return fmt.Errorf("unexpected error in retry loop")
+}
+
+// queueOperation queues a database operation for serial execution
+func queueOperation(operation func()) {
+	select {
+	case operationQueue <- operation:
+		// Operation queued successfully
+	default:
+		// Queue is full, execute immediately with mutex protection
+		dbMutex.Lock()
+		defer dbMutex.Unlock()
+		operation()
+	}
+}
+
+// startProgressBatchWorker starts a background worker to batch progress updates
+func startProgressBatchWorker() {
+	go func() {
+		var batch []ProgressUpdate
+		ticker := time.NewTicker(progressBatchTimeout)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case update := <-progressUpdateQueue:
+				batch = append(batch, update)
+
+				// Process batch if it reaches the batch size
+				if len(batch) >= progressBatchSize {
+					processProgressBatch(batch)
+					batch = batch[:0] // Reset batch
+				}
+
+			case <-ticker.C:
+				// Process any remaining updates in the batch
+				if len(batch) > 0 {
+					processProgressBatch(batch)
+					batch = batch[:0] // Reset batch
+				}
+			}
+		}
+	}()
+}
+
+// processProgressBatch processes a batch of progress updates
+func processProgressBatch(batch []ProgressUpdate) {
+	if len(batch) == 0 {
+		return
+	}
+
+	// Group updates by job_id and database_name to avoid duplicate updates
+	updateMap := make(map[string]ProgressUpdate)
+	for _, update := range batch {
+		key := update.JobID + "|" + update.DatabaseName
+		// Keep the most recent update for each job/database combination
+		if existing, exists := updateMap[key]; !exists || update.Timestamp.After(existing.Timestamp) {
+			updateMap[key] = update
+		}
+	}
+
+	// Execute batch update
+	query := `UPDATE backup_jobs SET progress = ? WHERE job_id = ? AND database_name = ?`
+
+	err := executeWithRetry(func() error {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		for _, update := range updateMap {
+			_, err := tx.Exec(query, update.Progress, update.JobID, update.DatabaseName)
+			if err != nil {
+				return err
+			}
+		}
+
+		return tx.Commit()
+	}, fmt.Sprintf("BatchProgressUpdate(%d updates)", len(updateMap)), 3)
+
+	if err != nil {
+		LogError("Failed to process progress batch: %v", err)
+	} else {
+		// Broadcast job update to UI asynchronously
+		go broadcastJobsUpdate()
+
+		// Record batch operation metrics
+		dbMetrics.mutex.Lock()
+		dbMetrics.BatchOperations++
+		dbMetrics.mutex.Unlock()
+	}
 }
 
 func createTables() error {
@@ -107,49 +321,34 @@ func CreateBackupJob(jobID, databaseName, backupType string, estimatedSizeKB int
 	query := `INSERT INTO backup_jobs (job_id, database_name, backup_type, status, progress, started_at, estimated_size_kb)
 		VALUES (?, ?, ?, 'running', 0, CURRENT_TIMESTAMP, ?)`
 
-	// Retry mechanism for database operations
-	maxRetries := 5
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	return executeWithRetry(func() error {
 		_, err := db.Exec(query, jobID, databaseName, backupType, estimatedSizeKB)
-		if err == nil {
-			return nil // Success
-		}
-
-		if attempt == maxRetries {
-			return fmt.Errorf("failed to create backup job after %d attempts: %v", maxRetries, err)
-		}
-
-		// Log retry attempt and wait before retrying
-		LogWarn("Database insert attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
-		time.Sleep(time.Duration(attempt) * 200 * time.Millisecond) // Exponential backoff
-	}
-
-	return fmt.Errorf("unexpected error in retry loop")
+		return err
+	}, fmt.Sprintf("CreateBackupJob(%s/%s)", jobID, databaseName), 5)
 }
 
 func UpdateBackupJobProgress(jobID, databaseName string, progress int) error {
-	query := `UPDATE backup_jobs SET progress = ? WHERE job_id = ? AND database_name = ?`
-
-	// Retry mechanism for database operations
-	maxRetries := 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		_, err := db.Exec(query, progress, jobID, databaseName)
-		if err == nil {
-			// Broadcast job update to UI
-			go broadcastJobsUpdate()
-			return nil
-		}
-
-		if attempt == maxRetries {
-			return fmt.Errorf("failed to update progress after %d attempts: %v", maxRetries, err)
-		}
-
-		// Log retry attempt and wait before retrying
-		LogWarn("Progress update attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
-		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	// Queue the progress update for batching instead of immediate execution
+	select {
+	case progressUpdateQueue <- ProgressUpdate{
+		JobID:        jobID,
+		DatabaseName: databaseName,
+		Progress:     progress,
+		Timestamp:    time.Now(),
+	}:
+		return nil // Successfully queued
+	default:
+		// Queue is full, fall back to immediate update with retry
+		return executeWithRetry(func() error {
+			query := `UPDATE backup_jobs SET progress = ? WHERE job_id = ? AND database_name = ?`
+			_, err := db.Exec(query, progress, jobID, databaseName)
+			if err == nil {
+				// Broadcast job update to UI asynchronously to avoid blocking
+				go broadcastJobsUpdate()
+			}
+			return err
+		}, fmt.Sprintf("UpdateBackupJobProgress(%s/%s)", jobID, databaseName), 3)
 	}
-
-	return fmt.Errorf("unexpected error in retry loop")
 }
 
 func UpdateBackupJobStatusByDB(jobID, databaseName, status string) error {
@@ -164,36 +363,27 @@ func UpdateBackupJobStatusByDB(jobID, databaseName, status string) error {
 		args = []interface{}{status, jobID, databaseName}
 	}
 
-	// Retry mechanism for database operations
-	maxRetries := 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	return executeWithRetry(func() error {
 		_, err := db.Exec(query, args...)
 		if err == nil {
-			// Broadcast job update to UI
+			// Broadcast job update to UI asynchronously to avoid blocking
 			go broadcastJobsUpdate()
-			return nil
 		}
-
-		if attempt == maxRetries {
-			return fmt.Errorf("failed to update status after %d attempts: %v", maxRetries, err)
-		}
-
-		// Log retry attempt and wait before retrying
-		LogWarn("Status update attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
-		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
-	}
-
-	return fmt.Errorf("unexpected error in retry loop")
+		return err
+	}, fmt.Sprintf("UpdateBackupJobStatusByDB(%s/%s)", jobID, databaseName), 3)
 }
 
 func UpdateBackupJobError(jobID, databaseName, errorMessage string) error {
 	query := `UPDATE backup_jobs SET error_message = ? WHERE job_id = ? AND database_name = ?`
-	_, err := db.Exec(query, errorMessage, jobID, databaseName)
-	if err == nil {
-		// Broadcast job update to UI
-		go broadcastJobsUpdate()
-	}
-	return err
+
+	return executeWithRetry(func() error {
+		_, err := db.Exec(query, errorMessage, jobID, databaseName)
+		if err == nil {
+			// Broadcast job update to UI asynchronously to avoid blocking
+			go broadcastJobsUpdate()
+		}
+		return err
+	}, fmt.Sprintf("UpdateBackupJobError(%s/%s)", jobID, databaseName), 3)
 }
 
 func getExistingJobError(jobID, databaseName string) string {
@@ -220,18 +410,10 @@ func CompleteBackupJob(jobID, databaseName string, success bool, actualSizeKB in
 			actual_size_kb = ?, backup_file_path = ?, error_message = ?
 		WHERE job_id = ? AND database_name = ?`
 
-	// Retry mechanism for database operations
-	maxRetries := 3
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	return executeWithRetry(func() error {
 		result, err := db.Exec(query, status, actualSizeKB, backupFilePath, errorMessage, jobID, databaseName)
 		if err != nil {
-			if attempt == maxRetries {
-				return fmt.Errorf("failed to update backup job after %d attempts: %v", maxRetries, err)
-			}
-			// Log retry attempt and wait before retrying
-			LogWarn("Database update attempt %d failed for job %s/%s, retrying: %v", attempt, jobID, databaseName, err)
-			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond) // Exponential backoff
-			continue
+			return err
 		}
 
 		// Check if any rows were affected
@@ -244,12 +426,10 @@ func CompleteBackupJob(jobID, databaseName string, success bool, actualSizeKB in
 			return fmt.Errorf("no backup job found with job_id=%s and database_name=%s", jobID, databaseName)
 		}
 
-		// Success - broadcast job update to UI
+		// Success - broadcast job update to UI asynchronously to avoid blocking
 		go broadcastJobsUpdate()
 		return nil
-	}
-
-	return fmt.Errorf("unexpected error in retry loop")
+	}, fmt.Sprintf("CompleteBackupJob(%s/%s)", jobID, databaseName), 3)
 }
 
 // GetRunningJobs returns all currently running backup jobs
@@ -446,8 +626,10 @@ func CreateBackupSummary(jobID, backupMode string, totalDBCount int) error {
 	query := `INSERT INTO backup_summary (job_id, backup_mode, total_db_count, state)
 		VALUES (?, ?, ?, 'running')`
 
-	_, err := db.Exec(query, jobID, backupMode, totalDBCount)
-	return err
+	return executeWithRetry(func() error {
+		_, err := db.Exec(query, jobID, backupMode, totalDBCount)
+		return err
+	}, fmt.Sprintf("CreateBackupSummary(%s)", jobID), 5)
 }
 
 func UpdateBackupSummary(jobID string, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int) error {
@@ -455,8 +637,10 @@ func UpdateBackupSummary(jobID string, totalSizeKB, totalDiskSizeKB, totalFull, 
 		SET total_size_kb = ?, total_disk_size = ?, total_full = ?, total_incremental = ?, total_failed = ?
 		WHERE job_id = ?`
 
-	_, err := db.Exec(query, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, jobID)
-	return err
+	return executeWithRetry(func() error {
+		_, err := db.Exec(query, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, jobID)
+		return err
+	}, fmt.Sprintf("UpdateBackupSummary(%s)", jobID), 3)
 }
 
 func CompleteBackupSummary(jobID string, cfg *Config) error {
@@ -1570,4 +1754,55 @@ func GetBackupTimelineData(days int) (map[string]interface{}, error) {
 func GenerateJobID() string {
 	now := time.Now()
 	return fmt.Sprintf("%d", now.Unix()) // Unix timestamp format
+}
+
+// GetDatabaseMetrics returns current database operation metrics
+func GetDatabaseMetrics() map[string]interface{} {
+	dbMetrics.mutex.RLock()
+	defer dbMetrics.mutex.RUnlock()
+
+	uptime := time.Since(dbMetrics.LastResetTime)
+
+	return map[string]interface{}{
+		"total_operations":      dbMetrics.TotalOperations,
+		"failed_operations":     dbMetrics.FailedOperations,
+		"retry_operations":      dbMetrics.RetryOperations,
+		"lock_contention_ops":   dbMetrics.LockContentionOps,
+		"batch_operations":      dbMetrics.BatchOperations,
+		"success_rate":          calculateSuccessRate(dbMetrics.TotalOperations, dbMetrics.FailedOperations),
+		"lock_contention_rate":  calculateContentionRate(dbMetrics.TotalOperations, dbMetrics.LockContentionOps),
+		"uptime_seconds":        uptime.Seconds(),
+		"operations_per_second": float64(dbMetrics.TotalOperations) / uptime.Seconds(),
+	}
+}
+
+// calculateSuccessRate calculates the success rate percentage
+func calculateSuccessRate(total, failed int64) float64 {
+	if total == 0 {
+		return 100.0
+	}
+	return float64(total-failed) / float64(total) * 100.0
+}
+
+// calculateContentionRate calculates the lock contention rate percentage
+func calculateContentionRate(total, contention int64) float64 {
+	if total == 0 {
+		return 0.0
+	}
+	return float64(contention) / float64(total) * 100.0
+}
+
+// ResetDatabaseMetrics resets the database metrics counters
+func ResetDatabaseMetrics() {
+	dbMetrics.mutex.Lock()
+	defer dbMetrics.mutex.Unlock()
+
+	dbMetrics.TotalOperations = 0
+	dbMetrics.FailedOperations = 0
+	dbMetrics.RetryOperations = 0
+	dbMetrics.LockContentionOps = 0
+	dbMetrics.BatchOperations = 0
+	dbMetrics.LastResetTime = time.Now()
+
+	LogInfo("Database metrics reset")
 }
