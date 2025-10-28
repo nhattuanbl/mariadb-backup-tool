@@ -73,6 +73,22 @@ func CalculateNextBackupTime(startTime string, intervalHours int) string {
 	return nextRun.Format("2006-01-02 15:04:05")
 }
 
+// formatDatabaseList formats a list of databases for log messages
+// Shows first 2 databases and "and X more" if there are more
+func formatDatabaseList(databases []string) string {
+	if len(databases) == 0 {
+		return "0 databases"
+	}
+
+	if len(databases) <= 2 {
+		return strings.Join(databases, " ")
+	}
+
+	// Show first 2 databases and count of remaining
+	showCount := 2
+	return fmt.Sprintf("%s and %d more", strings.Join(databases[:showCount], " "), len(databases)-showCount)
+}
+
 // StartScheduler starts the backup scheduler
 func StartScheduler(config *Config) {
 	if backupScheduler != nil && backupScheduler.isRunning {
@@ -219,7 +235,8 @@ func (s *Scheduler) triggerScheduledBackup() {
 		return
 	}
 
-	LogInfo("Scheduled backup will process %d databases: %v", len(validDatabases), validDatabases)
+	dbList := formatDatabaseList(validDatabases)
+	LogInfo("Scheduled backup will process %d database: %s", len(validDatabases), dbList)
 
 	// Generate job ID
 	jobID := GenerateJobID()

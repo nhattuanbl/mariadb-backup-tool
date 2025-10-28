@@ -38,8 +38,9 @@ type BackupIncResponse struct {
 
 // StartIncBackup starts a manual incremental backup process
 func StartIncBackup(request BackupIncRequest) BackupIncResponse {
-	LogInfo("🚀 [INC-BACKUP-START] Starting manual incremental backup - JobID: %s, Databases: %v, Mode: %s, RequestedBy: %s",
-		request.JobID, request.Databases, request.BackupMode, request.RequestedBy)
+	dbList := formatDatabaseList(request.Databases)
+	LogInfo("🚀 [INC-BACKUP-START] Starting manual incremental backup - JobID: %s, Databases: %s, Mode: %s, RequestedBy: %s",
+		request.JobID, dbList, request.BackupMode, request.RequestedBy)
 
 	// Reset global abort flag when starting new backup
 	ResetGlobalBackupAbort()

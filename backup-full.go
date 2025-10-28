@@ -39,8 +39,9 @@ type BackupFullResponse struct {
 
 // StartFullBackup starts a manual full backup process
 func StartFullBackup(request BackupFullRequest) BackupFullResponse {
-	LogInfo("🚀 [BACKUP-START] Starting manual full backup - JobID: %s, Databases: %v, Mode: %s, RequestedBy: %s",
-		request.JobID, request.Databases, request.BackupMode, request.RequestedBy)
+	dbList := formatDatabaseList(request.Databases)
+	LogInfo("🚀 [BACKUP-START] Starting manual full backup - JobID: %s, Databases: %s, Mode: %s, RequestedBy: %s",
+		request.JobID, dbList, request.BackupMode, request.RequestedBy)
 
 	// Reset global abort flag when starting new backup
 	ResetGlobalBackupAbort()

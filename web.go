@@ -2124,7 +2124,7 @@ func determineBackupType(dbName string, config *Config) string {
 
 	// Check if backup directory exists
 	if _, err := os.Stat(backupDir); os.IsNotExist(err) {
-		LogInfo("No backup directory found for %s - will do full backup", dbName)
+		//LogInfo("No backup directory found for %s - will do full backup", dbName)
 		return "full"
 	}
 
