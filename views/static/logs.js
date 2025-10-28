@@ -9,6 +9,8 @@ let currentFilters = {
 let isCurrentDay = true;
 let seenLogIds = new Set();
 let allLogs = [];
+let isLoadingMore = false;
+let hasMoreLogs = false;
 
 // Performance optimization: limit displayed logs to prevent browser lag
 const MAX_DISPLAYED_LOGS = 1500; // Show max 1500 log entries in DOM
@@ -58,9 +60,14 @@ function loadInitialLogsForDate(date) {
         container.innerHTML = '<div class="log-loading"><div class="spinner"></div><p>Loading logs...</p></div>';
     }
     
+    // Reset loading state
+    isLoadingMore = false;
+    hasMoreLogs = true;
+    
     const params = new URLSearchParams();
     params.append('date', date);
     params.append('limit', MAX_STORED_LOGS.toString());
+    params.append('offset', '0');
     
     fetch(`/api/logs/stream?${params}`)
         .then(response => {
@@ -74,8 +81,13 @@ function loadInitialLogsForDate(date) {
         .then(data => {
             if (data.success) {
                 allLogs = data.logs || [];
+                // Check if there might be more logs (if we got exactly the limit, there might be more)
+                if (data.logs && data.logs.length < MAX_STORED_LOGS) {
+                    hasMoreLogs = false;
+                }
                 displayAllLogs();
-                // showToast(`Loaded ${allLogs.length} log entries for ${date}`, 'success');
+                // Setup scroll listener after initial load
+                setupScrollListener();
             } else {
                 console.error('Failed to load initial logs:', data.error);
                 const container = document.getElementById('log-entries');
@@ -270,6 +282,9 @@ function handleDateChange() {
     
     // Load logs for the selected date
     loadInitialLogsForDate(selectedDate);
+    
+    // Setup scroll listener after date changes
+    setupScrollListener();
 }
 
 function handleFilterChange() {
@@ -521,4 +536,94 @@ function isScrollAtTop(container) {
 function isScrollAtBottom(container) {
     const threshold = 5; // Allow 5px tolerance
     return container.scrollTop + container.clientHeight >= container.scrollHeight - threshold;
+}
+
+function setupScrollListener() {
+    const container = document.getElementById('log-entries');
+    if (!container) return;
+    
+    // Remove existing listener if any
+    container.onscroll = null;
+    
+    // Add scroll listener
+    container.onscroll = function() {
+        // Only load more if viewing historical logs (not current day)
+        if (isCurrentDay) return;
+        
+        // Only load if not already loading and there might be more logs
+        if (isLoadingMore || !hasMoreLogs) return;
+        
+        // Check if user scrolled to bottom
+        if (isScrollAtBottom(container)) {
+            loadMoreLogs();
+        }
+    };
+}
+
+function loadMoreLogs() {
+    if (isLoadingMore || !hasMoreLogs) return;
+    
+    isLoadingMore = true;
+    
+    // Show loading indicator at bottom
+    const container = document.getElementById('log-entries');
+    if (!container) {
+        isLoadingMore = false;
+        return;
+    }
+    
+    // Add loading indicator
+    const loadingIndicator = document.createElement('div');
+    loadingIndicator.className = 'log-loading-more';
+    loadingIndicator.innerHTML = '<div class="spinner-small"></div><p>Loading more logs...</p>';
+    container.appendChild(loadingIndicator);
+    
+    // Calculate next offset (current number of logs)
+    const offset = allLogs.length;
+    
+    // Get the current date filter
+    const selectedDate = document.getElementById('log-date').value;
+    
+    const params = new URLSearchParams();
+    params.append('date', selectedDate);
+    params.append('limit', '500'); // Load 500 more logs
+    params.append('offset', offset.toString());
+    
+    fetch(`/api/logs/stream?${params}`)
+        .then(response => response.json())
+        .then(data => {
+            loadingIndicator.remove();
+            
+            if (data.success && data.logs && data.logs.length > 0) {
+                // Append new logs to allLogs array (oldest logs, since we're paginating)
+                allLogs = allLogs.concat(data.logs);
+                
+                // Check if there might be more logs
+                if (data.logs.length < 500) {
+                    hasMoreLogs = false;
+                }
+                
+                // Re-display all logs with the new additions
+                displayAllLogs();
+                
+                // Restore scroll position (approximate)
+                setTimeout(() => {
+                    container.scrollTop = container.scrollHeight * 0.5; // Try to maintain position
+                }, 10);
+                
+                console.log(`Loaded ${data.logs.length} more logs. Total: ${allLogs.length}`);
+            } else {
+                // No more logs available
+                hasMoreLogs = false;
+                console.log('No more logs to load');
+            }
+            
+            isLoadingMore = false;
+        })
+        .catch(error => {
+            console.error('Error loading more logs:', error);
+            loadingIndicator.remove();
+            isLoadingMore = false;
+            hasMoreLogs = false;
+        });
 }

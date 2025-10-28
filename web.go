@@ -2285,6 +2285,7 @@ func handleLogStream(w http.ResponseWriter, r *http.Request) {
 	// Get query parameters
 	date := r.URL.Query().Get("date")
 	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
 
 	// Set default limit with reasonable maximum to prevent performance issues
 	limit := 2000
@@ -2299,9 +2300,17 @@ func handleLogStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse offset parameter
+	offset := 0
+	if offsetStr != "" {
+		if parsedOffset, err := strconv.Atoi(offsetStr); err == nil && parsedOffset > 0 {
+			offset = parsedOffset
+		}
+	}
+
 	// Get log entries for the specified date
-	LogDebug("Getting log entries for date: %s, limit: %d", date, limit)
-	logEntries, err := getLogEntries(date, "", limit)
+	LogDebug("Getting log entries for date: %s, limit: %d, offset: %d", date, limit, offset)
+	logEntries, err := getLogEntries(date, "", limit, offset)
 	if err != nil {
 		LogError("Failed to get log entries: %v", err)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -2450,7 +2459,7 @@ func handleDeleteLogFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // getLogEntries retrieves log entries with optional date filtering
-func getLogEntries(date, endTime string, limit int) ([]map[string]interface{}, error) {
+func getLogEntries(date, endTime string, limit int, offset int) ([]map[string]interface{}, error) {
 	if appLogger == nil {
 		return nil, fmt.Errorf("logging system not initialized")
 	}
@@ -2496,8 +2505,16 @@ func getLogEntries(date, endTime string, limit int) ([]map[string]interface{}, e
 	var entries []map[string]interface{}
 	entries = make([]map[string]interface{}, 0, limit) // Pre-allocate with capacity
 
-	for i, line := range lines {
-		if i >= limit {
+	count := 0
+	for _, line := range lines {
+		// Skip lines until we reach the offset
+		if count < offset {
+			count++
+			continue
+		}
+
+		// Stop if we've reached the limit
+		if len(entries) >= limit {
 			break
 		}
 
