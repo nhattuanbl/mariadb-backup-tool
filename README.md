@@ -124,8 +124,8 @@ sudo mkdir -p /etc/mariadb-backup-tool
 cd /etc/mariadb-backup-tool
 
 # Download the binary (replace with actual download URL)
-sudo wget https://github.com/nhattuanbl/mariadb-backup-tool/releases/latest/download/mariadb-backup-tool-1.0.7-linux-amd64.zip
-sudo unzip mariadb-backup-tool-1.0.7-linux-amd64.zip
+sudo wget https://github.com/nhattuanbl/mariadb-backup-tool/releases/latest/download/mariadb-backup-tool-1.0.8-linux-amd64.zip
+sudo unzip mariadb-backup-tool-1.0.8-linux-amd64.zip
 sudo chmod +x mariadb-backup-tool
 ```
 
@@ -228,7 +228,7 @@ The MariaDB Backup Tool supports the following command-line arguments:
 - **Default**: Not set (optional)
 - **Example**: `--version`
 - **Usage**: Shows the current version of MariaDB Backup Tool and exits immediately.
-- **Output**: `MariaDB Backup Tool v1.0.7`
+- **Output**: `MariaDB Backup Tool v1.0.8`
 
 #### `--help`
 - **Description**: Display help information and usage examples
@@ -313,7 +313,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Changelog
 
-### Version 1.0.7
+### Version 1.0.8
 - Initial release
 - Full and incremental backup support
 - Web interface with real-time monitoring
