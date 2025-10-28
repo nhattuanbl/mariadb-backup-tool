@@ -651,13 +651,45 @@ function setupDashboardEventListeners() {
 }
 
 function getBackupModeIcon(backupMode) {
-    switch(backupMode) {
+    // Check if it's a scheduled backup
+    const isScheduled = backupMode.startsWith('scheduled-');
+    
+    // Extract the base mode
+    let baseMode = backupMode;
+    if (isScheduled) {
+        // Remove 'scheduled-' prefix and get the actual mode
+        baseMode = backupMode.replace('scheduled-', '');
+        
+        // Handle special cases for scheduled-auto-full and scheduled-auto-inc
+        if (baseMode === 'auto-full') {
+            return '⏰🤖'; // Clock + Robot for scheduled auto full
+        } else if (baseMode === 'auto-inc') {
+            return '⏰🤖'; // Clock + Robot for scheduled auto incremental
+        }
+    }
+    
+    // Icon for scheduled backups
+    if (isScheduled) {
+        switch(baseMode) {
+            case 'full':
+                return '⏰🔄'; // Clock + Refresh for scheduled full
+            case 'inc':
+                return '⏰⚡'; // Clock + Lightning for scheduled incremental
+            case 'auto':
+                return '⏰🤖'; // Clock + Robot for scheduled auto
+            default:
+                return '⏰❓'; // Clock + Question mark for unknown scheduled
+        }
+    }
+    
+    // Icons for manual backups
+    switch(baseMode) {
         case 'auto':
-            return '🤖'; // Robot icon for auto mode
+            return '✋🤖'; // Hand + Robot for manual auto mode
         case 'full':
-            return '🔄'; // Refresh icon for full backup
+            return '✋🔄'; // Hand + Refresh for manual full backup
         case 'incremental':
-            return '⚡'; // Lightning icon for incremental
+            return '✋⚡'; // Hand + Lightning for manual incremental
         default:
             return '❓'; // Question mark for unknown
     }
