@@ -91,6 +91,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 	totalDiskSizeKB := 0
 	totalFull := 0
 	totalFailed := 0
+	totalMySQLRestartTime := int64(0) // Total MySQL restart time in seconds
 
 	backupType := "force-full"
 	if request.BackupMode == "auto" {
@@ -172,7 +173,8 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						LogDebug("✅ [MEMORY] All active processes completed, proceeding with MySQL restart")
 
 						LogDebug("🔄 [MYSQL-RESTART] Starting MySQL service restart with monitoring")
-						if !restartMySQLServiceWithMonitoring(config, &abortBackup) {
+						success, restartDuration := restartMySQLServiceWithMonitoring(config, &abortBackup)
+						if !success {
 							LogError("❌ [MYSQL-RESTART] MySQL service restart failed, aborting all backup processes")
 
 							// Update job status to failed due to MySQL restart failure
@@ -188,6 +190,11 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 							return
 						}
 						LogDebug("✅ [MYSQL-RESTART] MySQL service restart completed successfully")
+
+						// Track MySQL restart time
+						mu.Lock()
+						totalMySQLRestartTime += int64(restartDuration.Seconds())
+						mu.Unlock()
 
 						mu.Lock()
 						mysqlRestartInProgress = false
@@ -330,6 +337,10 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 	time.Sleep(2 * time.Second)
 
 	LogDebug("📊 [SUMMARY] Completing backup summary for JobID: %s", request.JobID)
+
+	// Update MySQL restart time in summary
+	UpdateMySQLRestartTime(request.JobID, int(totalMySQLRestartTime))
+
 	CompleteBackupSummary(request.JobID, config)
 
 	LogInfo("🎉 [BACKUP-COMPLETE] Full backup job %s completed - Total: %d, Successful: %d, Failed: %d, Total Size: %d KB, Total Disk Size: %d KB",
@@ -1159,10 +1170,12 @@ func shouldRestartMySQL(config *Config) bool {
 }
 
 // restartMySQLServiceWithMonitoring restarts MySQL service and monitors it for 10 minutes
-func restartMySQLServiceWithMonitoring(config *Config, abortBackup *bool) bool {
+// Returns (success bool, duration time.Duration) for the restart operation
+func restartMySQLServiceWithMonitoring(config *Config, abortBackup *bool) (bool, time.Duration) {
+	restartStartTime := time.Now()
 	if runtime.GOOS != "linux" {
 		LogInfo("⏭️ [MYSQL-RESTART] MySQL restart skipped - not on Linux system (OS: %s)", runtime.GOOS)
-		return true
+		return true, 0
 	}
 
 	// Get memory usage before restart
@@ -1215,7 +1228,7 @@ func restartMySQLServiceWithMonitoring(config *Config, abortBackup *bool) bool {
 
 	if restartedService == "" {
 		LogError("❌ [MYSQL-RESTART] Failed to restart MySQL service - tried all common service names (mysql, mariadb, mysqld)")
-		return false
+		return false, time.Since(restartStartTime)
 	}
 
 	// Monitor service for up to 10 minutes
@@ -1241,7 +1254,9 @@ func restartMySQLServiceWithMonitoring(config *Config, abortBackup *bool) bool {
 
 			LogInfo("✅ [MYSQL-MONITOR] MySQL service '%s' is running successfully! Memory: %.2f%% (before: %.2f%%)",
 				restartedService, memoryAfter, memoryBefore)
-			return true
+			restartDuration := time.Since(restartStartTime)
+			LogInfo("⏱️ [MYSQL-RESTART-TIME] MySQL restart took %v", restartDuration)
+			return true, restartDuration
 		}
 
 		elapsed := time.Since(startTime)
@@ -1253,7 +1268,7 @@ func restartMySQLServiceWithMonitoring(config *Config, abortBackup *bool) bool {
 	// Service failed to start within 10 minutes
 	LogError("❌ [MYSQL-MONITOR] MySQL service '%s' failed to start within 10 minutes, aborting all backup processes", restartedService)
 	*abortBackup = true
-	return false
+	return false, time.Since(restartStartTime)
 }
 
 // isMySQLServiceRunning checks if MySQL service is running

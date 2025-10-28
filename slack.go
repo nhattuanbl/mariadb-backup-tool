@@ -39,6 +39,7 @@ type BackupSummary struct {
 	TotalIncremental int
 	TotalFailed      int
 	TotalSizeKB      int
+	MysqlRestartTime int // Time in seconds
 	CreatedAt        time.Time
 	CompletedAt      time.Time
 	Duration         time.Duration
@@ -71,6 +72,26 @@ func SendSlackNotification(webhookURL string, summary BackupSummary) error {
 	// Format file size
 	sizeStr := formatFileSize(summary.TotalSizeKB)
 
+	// Determine mode icon
+	modeIcon := "📦"
+	if summary.BackupMode == "auto" {
+		modeIcon = "🔄"
+	} else if summary.BackupMode == "full" {
+		modeIcon = "📦"
+	} else if summary.BackupMode == "incremental" {
+		modeIcon = "📈"
+	}
+
+	// Format duration
+	durationStr := formatDurationForSlack(summary.Duration)
+
+	// Format MySQL restart time if applicable
+	mysqlRestartStr := ""
+	if summary.MysqlRestartTime > 0 {
+		restartDuration := time.Duration(summary.MysqlRestartTime) * time.Second
+		mysqlRestartStr = formatDurationForSlack(restartDuration)
+	}
+
 	// Create Slack message
 	message := SlackMessage{
 		Text: fmt.Sprintf("🗄️ *MariaDB Backup %s*", getBackupStatusEmoji(summary.TotalFailed, summary.TotalDBCount)),
@@ -78,12 +99,12 @@ func SendSlackNotification(webhookURL string, summary BackupSummary) error {
 			{
 				Color:     color,
 				Title:     fmt.Sprintf("Backup Job: %s", summary.JobID),
-				Text:      fmt.Sprintf("Backup completed in %v", summary.Duration),
+				Text:      fmt.Sprintf("Backup completed in %s", durationStr),
 				Timestamp: summary.CompletedAt.Unix(),
 				Fields: []SlackField{
 					{
 						Title: "Mode",
-						Value: summary.BackupMode,
+						Value: modeIcon,
 						Short: true,
 					},
 					{
@@ -92,8 +113,13 @@ func SendSlackNotification(webhookURL string, summary BackupSummary) error {
 						Short: true,
 					},
 					{
-						Title: "Successful",
-						Value: fmt.Sprintf("%d", summary.TotalFull+summary.TotalIncremental),
+						Title: "Full Backups",
+						Value: fmt.Sprintf("%d", summary.TotalFull),
+						Short: true,
+					},
+					{
+						Title: "Incremental Backups",
+						Value: fmt.Sprintf("%d", summary.TotalIncremental),
 						Short: true,
 					},
 					{
@@ -111,9 +137,23 @@ func SendSlackNotification(webhookURL string, summary BackupSummary) error {
 						Value: fmt.Sprintf("%.1f%%", successRate),
 						Short: true,
 					},
+					{
+						Title: "Duration",
+						Value: durationStr,
+						Short: true,
+					},
 				},
 			},
 		},
+	}
+
+	// Add MySQL restart time field if applicable
+	if mysqlRestartStr != "" {
+		message.Attachments[0].Fields = append(message.Attachments[0].Fields, SlackField{
+			Title: "MySQL Restart Time",
+			Value: mysqlRestartStr,
+			Short: true,
+		})
 	}
 
 	// Convert to JSON
@@ -145,6 +185,21 @@ func formatFileSize(sizeKB int) string {
 		return fmt.Sprintf("%.1f MB", float64(sizeKB)/1024)
 	} else {
 		return fmt.Sprintf("%.1f GB", float64(sizeKB)/(1024*1024))
+	}
+}
+
+// formatDurationForSlack formats a duration into human-readable format for Slack notifications
+func formatDurationForSlack(duration time.Duration) string {
+	if duration < time.Minute {
+		return fmt.Sprintf("%.0fs", duration.Seconds())
+	} else if duration < time.Hour {
+		minutes := int(duration.Minutes())
+		seconds := int(duration.Seconds()) % 60
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	} else {
+		hours := int(duration.Hours())
+		minutes := int(duration.Minutes()) % 60
+		return fmt.Sprintf("%dh %dm", hours, minutes)
 	}
 }
 
@@ -185,6 +240,7 @@ func SendSlackNotificationFromSummary(webhookURL, jobID string) error {
 		TotalIncremental: summary["total_incremental"].(int),
 		TotalFailed:      summary["total_failed"].(int),
 		TotalSizeKB:      summary["total_size_kb"].(int),
+		MysqlRestartTime: summary["mysql_restart_time"].(int),
 	}
 
 	// Parse timestamps

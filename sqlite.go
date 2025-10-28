@@ -295,7 +295,8 @@ func createTables() error {
 			backup_mode TEXT NOT NULL,
 			total_full INTEGER DEFAULT 0,
 			total_incremental INTEGER DEFAULT 0,
-			total_failed INTEGER DEFAULT 0
+			total_failed INTEGER DEFAULT 0,
+			mysql_restart_time INTEGER DEFAULT 0
 		)`,
 	}
 
@@ -643,6 +644,17 @@ func UpdateBackupSummary(jobID string, totalSizeKB, totalDiskSizeKB, totalFull, 
 	}, fmt.Sprintf("UpdateBackupSummary(%s)", jobID), 3)
 }
 
+func UpdateMySQLRestartTime(jobID string, restartTimeSeconds int) error {
+	query := `UPDATE backup_summary 
+		SET mysql_restart_time = ?
+		WHERE job_id = ?`
+
+	return executeWithRetry(func() error {
+		_, err := db.Exec(query, restartTimeSeconds, jobID)
+		return err
+	}, fmt.Sprintf("UpdateMySQLRestartTime(%s)", jobID), 3)
+}
+
 func CompleteBackupSummary(jobID string, cfg *Config) error {
 	query := `UPDATE backup_summary 
 		SET state = 'completed', completed_at = CURRENT_TIMESTAMP
@@ -676,7 +688,7 @@ func CancelBackupSummary(jobID string) error {
 
 func GetBackupSummaries() ([]map[string]interface{}, error) {
 	query := `SELECT job_id, total_db_count, created_at, state, completed_at, 
-		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed, mysql_restart_time
 		FROM backup_summary 
 		ORDER BY created_at DESC 
 		LIMIT 20`
@@ -690,11 +702,11 @@ func GetBackupSummaries() ([]map[string]interface{}, error) {
 	var summaries []map[string]interface{}
 	for rows.Next() {
 		var jobID, createdAt, state, backupMode string
-		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, mysqlRestartTime int
 		var completedAt sql.NullString // Use sql.NullString for nullable column
 
 		err := rows.Scan(&jobID, &totalDBCount, &createdAt, &state, &completedAt,
-			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed, &mysqlRestartTime)
 		if err != nil {
 			return nil, err
 		}
@@ -706,17 +718,18 @@ func GetBackupSummaries() ([]map[string]interface{}, error) {
 		}
 
 		summary := map[string]interface{}{
-			"job_id":            jobID,
-			"total_db_count":    totalDBCount,
-			"created_at":        createdAt,
-			"state":             state,
-			"completed_at":      completedAtStr,
-			"total_size_kb":     totalSizeKB,
-			"total_disk_size":   totalDiskSizeKB,
-			"backup_mode":       backupMode,
-			"total_full":        totalFull,
-			"total_incremental": totalIncremental,
-			"total_failed":      totalFailed,
+			"job_id":             jobID,
+			"total_db_count":     totalDBCount,
+			"created_at":         createdAt,
+			"state":              state,
+			"completed_at":       completedAtStr,
+			"total_size_kb":      totalSizeKB,
+			"total_disk_size":    totalDiskSizeKB,
+			"backup_mode":        backupMode,
+			"total_full":         totalFull,
+			"total_incremental":  totalIncremental,
+			"total_failed":       totalFailed,
+			"mysql_restart_time": mysqlRestartTime,
 		}
 
 		summaries = append(summaries, summary)
@@ -728,16 +741,16 @@ func GetBackupSummaries() ([]map[string]interface{}, error) {
 // GetBackupSummaryByJobID gets a specific backup summary by job ID
 func GetBackupSummaryByJobID(jobID string) (map[string]interface{}, error) {
 	query := `SELECT job_id, total_db_count, created_at, state, completed_at, 
-		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed, mysql_restart_time
 		FROM backup_summary 
 		WHERE job_id = ?`
 
 	var jobIDResult, createdAt, state, backupMode string
-	var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+	var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, mysqlRestartTime int
 	var completedAt sql.NullString
 
 	err := db.QueryRow(query, jobID).Scan(&jobIDResult, &totalDBCount, &createdAt, &state, &completedAt,
-		&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+		&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed, &mysqlRestartTime)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil // Not found
@@ -752,17 +765,18 @@ func GetBackupSummaryByJobID(jobID string) (map[string]interface{}, error) {
 	}
 
 	summary := map[string]interface{}{
-		"job_id":            jobIDResult,
-		"total_db_count":    totalDBCount,
-		"created_at":        createdAt,
-		"state":             state,
-		"completed_at":      completedAtStr,
-		"total_size_kb":     totalSizeKB,
-		"total_disk_size":   totalDiskSizeKB,
-		"backup_mode":       backupMode,
-		"total_full":        totalFull,
-		"total_incremental": totalIncremental,
-		"total_failed":      totalFailed,
+		"job_id":             jobIDResult,
+		"total_db_count":     totalDBCount,
+		"created_at":         createdAt,
+		"state":              state,
+		"completed_at":       completedAtStr,
+		"total_size_kb":      totalSizeKB,
+		"total_disk_size":    totalDiskSizeKB,
+		"backup_mode":        backupMode,
+		"total_full":         totalFull,
+		"total_incremental":  totalIncremental,
+		"total_failed":       totalFailed,
+		"mysql_restart_time": mysqlRestartTime,
 	}
 
 	return summary, nil
@@ -772,7 +786,7 @@ func GetBackupSummaryByJobID(jobID string) (map[string]interface{}, error) {
 func GetRunningJobsWithSummary() (map[string]interface{}, error) {
 	// Get running summaries (state = 'running') AND recent completed summaries
 	summaryQuery := `SELECT job_id, total_db_count, created_at, state, completed_at, 
-		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed, mysql_restart_time
 		FROM backup_summary 
 		WHERE state = 'running' OR (state = 'completed' AND completed_at >= datetime('now', '-1 day'))
 		ORDER BY 
@@ -797,11 +811,11 @@ func GetRunningJobsWithSummary() (map[string]interface{}, error) {
 	var summaries []map[string]interface{}
 	for summaryRows.Next() {
 		var jobID, createdAt, state, backupMode string
-		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, mysqlRestartTime int
 		var completedAt sql.NullString // Use sql.NullString for nullable column
 
 		err := summaryRows.Scan(&jobID, &totalDBCount, &createdAt, &state, &completedAt,
-			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed, &mysqlRestartTime)
 		if err != nil {
 			return nil, err
 		}
@@ -813,17 +827,18 @@ func GetRunningJobsWithSummary() (map[string]interface{}, error) {
 		}
 
 		summary := map[string]interface{}{
-			"job_id":            jobID,
-			"total_db_count":    totalDBCount,
-			"created_at":        createdAt,
-			"state":             state,
-			"completed_at":      completedAtStr,
-			"total_size_kb":     totalSizeKB,
-			"total_disk_size":   totalDiskSizeKB,
-			"backup_mode":       backupMode,
-			"total_full":        totalFull,
-			"total_incremental": totalIncremental,
-			"total_failed":      totalFailed,
+			"job_id":             jobID,
+			"total_db_count":     totalDBCount,
+			"created_at":         createdAt,
+			"state":              state,
+			"completed_at":       completedAtStr,
+			"total_size_kb":      totalSizeKB,
+			"total_disk_size":    totalDiskSizeKB,
+			"backup_mode":        backupMode,
+			"total_full":         totalFull,
+			"total_incremental":  totalIncremental,
+			"total_failed":       totalFailed,
+			"mysql_restart_time": mysqlRestartTime,
 		}
 
 		summaries = append(summaries, summary)
@@ -948,7 +963,7 @@ func GetRecentActivityWithPagination(page, limit int) (map[string]interface{}, e
 
 	// Get all summaries (not just recent ones) with pagination
 	summaryQuery := `SELECT job_id, total_db_count, created_at, state, completed_at, 
-		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed
+		total_size_kb, total_disk_size, backup_mode, total_full, total_incremental, total_failed, mysql_restart_time
 		FROM backup_summary 
 		ORDER BY 
 			CASE 
@@ -972,11 +987,11 @@ func GetRecentActivityWithPagination(page, limit int) (map[string]interface{}, e
 	var summaries []map[string]interface{}
 	for summaryRows.Next() {
 		var jobID, createdAt, state, backupMode string
-		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed int
+		var totalDBCount, totalSizeKB, totalDiskSizeKB, totalFull, totalIncremental, totalFailed, mysqlRestartTime int
 		var completedAt sql.NullString
 
 		err := summaryRows.Scan(&jobID, &totalDBCount, &createdAt, &state, &completedAt,
-			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed)
+			&totalSizeKB, &totalDiskSizeKB, &backupMode, &totalFull, &totalIncremental, &totalFailed, &mysqlRestartTime)
 		if err != nil {
 			return nil, err
 		}
@@ -988,17 +1003,18 @@ func GetRecentActivityWithPagination(page, limit int) (map[string]interface{}, e
 		}
 
 		summary := map[string]interface{}{
-			"job_id":            jobID,
-			"total_db_count":    totalDBCount,
-			"created_at":        createdAt,
-			"state":             state,
-			"completed_at":      completedAtStr,
-			"total_size_kb":     totalSizeKB,
-			"total_disk_size":   totalDiskSizeKB,
-			"backup_mode":       backupMode,
-			"total_full":        totalFull,
-			"total_incremental": totalIncremental,
-			"total_failed":      totalFailed,
+			"job_id":             jobID,
+			"total_db_count":     totalDBCount,
+			"created_at":         createdAt,
+			"state":              state,
+			"completed_at":       completedAtStr,
+			"total_size_kb":      totalSizeKB,
+			"total_disk_size":    totalDiskSizeKB,
+			"backup_mode":        backupMode,
+			"total_full":         totalFull,
+			"total_incremental":  totalIncremental,
+			"total_failed":       totalFailed,
+			"mysql_restart_time": mysqlRestartTime,
 		}
 
 		summaries = append(summaries, summary)

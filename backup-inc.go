@@ -216,6 +216,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 	totalDiskSizeKB := 0
 	totalInc := 0
 	totalFailed := 0
+	totalMySQLRestartTime := int64(0) // Total MySQL restart time in seconds
 
 	backupType := "force-inc"
 	if request.BackupMode == "auto" {
@@ -297,7 +298,8 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 						LogDebug("✅ [MEMORY] All active processes completed, proceeding with MySQL restart")
 
 						LogDebug("🔄 [MYSQL-RESTART] Starting MySQL service restart with monitoring")
-						if !restartMySQLServiceWithMonitoring(config, &abortBackup) {
+						success, restartDuration := restartMySQLServiceWithMonitoring(config, &abortBackup)
+						if !success {
 							LogError("❌ [MYSQL-RESTART] MySQL service restart failed, aborting all backup processes")
 
 							// Update job status to failed due to MySQL restart failure
@@ -313,6 +315,11 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 							return
 						}
 						LogDebug("✅ [MYSQL-RESTART] MySQL service restart completed successfully")
+
+						// Track MySQL restart time
+						mu.Lock()
+						totalMySQLRestartTime += int64(restartDuration.Seconds())
+						mu.Unlock()
 
 						mu.Lock()
 						mysqlRestartInProgress = false
@@ -424,6 +431,10 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 	time.Sleep(2 * time.Second)
 
 	LogDebug("📊 [SUMMARY] Completing backup summary for JobID: %s", request.JobID)
+
+	// Update MySQL restart time in summary
+	UpdateMySQLRestartTime(request.JobID, int(totalMySQLRestartTime))
+
 	CompleteBackupSummary(request.JobID, config)
 
 	LogInfo("🎉 [BACKUP-COMPLETE] Incremental backup job %s completed - Total: %d, Successful: %d, Failed: %d, Total Size: %d KB, Total Disk Size: %d KB",
