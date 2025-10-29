@@ -112,22 +112,22 @@ mkdir -p dist
 ### 2. Package Binaries
 ```bash
 # Linux AMD64
-zip dist/mariadb-backup-tool-1.0.8-linux-amd64.zip build/mariadb-backup-tool-linux-amd64
+zip dist/mariadb-backup-tool-1.0.9-linux-amd64.zip build/mariadb-backup-tool-linux-amd64
 
 # Linux ARM64
-zip dist/mariadb-backup-tool-1.0.8-linux-arm64.zip build/mariadb-backup-tool-linux-arm64
+zip dist/mariadb-backup-tool-1.0.9-linux-arm64.zip build/mariadb-backup-tool-linux-arm64
 
 # macOS AMD64
-zip dist/mariadb-backup-tool-1.0.8-darwin-amd64.zip build/mariadb-backup-tool-darwin-amd64
+zip dist/mariadb-backup-tool-1.0.9-darwin-amd64.zip build/mariadb-backup-tool-darwin-amd64
 
 # macOS ARM64
-zip dist/mariadb-backup-tool-1.0.8-darwin-arm64.zip build/mariadb-backup-tool-darwin-arm64
+zip dist/mariadb-backup-tool-1.0.9-darwin-arm64.zip build/mariadb-backup-tool-darwin-arm64
 
 # Windows AMD64
-zip dist/mariadb-backup-tool-1.0.8-windows-amd64.zip build/mariadb-backup-tool-windows-amd64.exe
+zip dist/mariadb-backup-tool-1.0.9-windows-amd64.zip build/mariadb-backup-tool-windows-amd64.exe
 
 # Windows ARM64
-zip dist/mariadb-backup-tool-1.0.8-windows-arm64.zip build/mariadb-backup-tool-windows-arm64.exe
+zip dist/mariadb-backup-tool-1.0.9-windows-arm64.zip build/mariadb-backup-tool-windows-arm64.exe
 ```
 
 ## Testing the Build
@@ -159,7 +159,7 @@ Create a `build.sh` script for easy building:
 #!/bin/bash
 set -e
 
-VERSION="1.0.8"
+VERSION="1.0.9"
 BUILD_DIR="build"
 DIST_DIR="dist"
 
@@ -281,8 +281,8 @@ go test -cover ./...
 
 ### 1. Tag the Release
 ```bash
-git tag v1.0.8
-git push origin v1.0.8
+git tag v1.0.9
+git push origin v1.0.9
 ```
 
 ### 2. Create GitHub Release
