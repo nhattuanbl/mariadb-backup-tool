@@ -1058,9 +1058,27 @@ func MonitorBackupProgressWithSize(cmd *exec.Cmd, dbName, jobID string, dbSizeBy
 		case err := <-done:
 			// Process has finished
 			if err != nil {
-				LogWarn("⚠️ [BACKUP-MONITOR] Backup process %s completed with error: %v", dbName, err)
-				// Update job status to failed
-				UpdateBackupJobStatusByDB(jobID, dbName, "failed")
+				var errorMessage string
+				if exitError, ok := err.(*exec.ExitError); ok {
+					switch exitError.ExitCode() {
+					case 1:
+						errorMessage = "mysqldump: General error (check database connection and permissions)"
+					case 2:
+						errorMessage = "mysqldump: Misuse of shell builtins"
+					case 3:
+						errorMessage = "mysqldump: Connection error (check host, port, username, password)"
+					default:
+						errorMessage = fmt.Sprintf("mysqldump failed with exit code %d: %v", exitError.ExitCode(), err)
+					}
+				} else {
+					errorMessage = fmt.Sprintf("Backup process failed: %v", err)
+				}
+				LogWarn("⚠️ [BACKUP-MONITOR] Backup process %s completed with error: %s", dbName, errorMessage)
+				// Update job status to failed with error message
+				updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", errorMessage)
+				if updateErr != nil {
+					LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
+				}
 			} else {
 				LogDebug("✅ [BACKUP-MONITOR] Backup process %s completed successfully", dbName)
 				// Set final progress to 100%
