@@ -224,6 +224,36 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 		backupType = "auto-inc"
 	}
 
+	// Create shared MySQL connection pool for all workers
+	// Limit pool to Parallel Processes * 3 (each worker may use 3-4 connections)
+	dsn, err := buildMySQLDSN(config)
+	if err != nil {
+		LogError("❌ [CONNECTION-POOL] Failed to build DSN: %v", err)
+		return
+	}
+
+	mysqlPool, err := sql.Open("mysql", dsn)
+	if err != nil {
+		LogError("❌ [CONNECTION-POOL] Failed to create MySQL connection pool: %v", err)
+		return
+	}
+	defer mysqlPool.Close()
+
+	// Configure connection pool to limit connections to Parallel * 3
+	maxConns := config.Backup.Parallel * 3
+	mysqlPool.SetMaxOpenConns(maxConns)
+	mysqlPool.SetMaxIdleConns(config.Backup.Parallel)
+	mysqlPool.SetConnMaxLifetime(30 * time.Minute)
+
+	// Test the connection pool
+	if err := mysqlPool.Ping(); err != nil {
+		LogError("❌ [CONNECTION-POOL] Failed to ping MySQL connection pool: %v", err)
+		mysqlPool.Close()
+		return
+	}
+
+	LogInfo("✅ [CONNECTION-POOL] MySQL connection pool created - MaxOpen: %d, MaxIdle: %d", maxConns, config.Backup.Parallel)
+
 	processQueue := make(chan string, len(request.Databases))
 	activeProcesses := make(chan struct{}, config.Backup.Parallel)
 	var wg sync.WaitGroup
@@ -352,7 +382,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 				}
 
 				estimatedSizeKB := 0
-				if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
+				if dbSizeBytes, err := getDatabaseSize(dbName, mysqlPool); err == nil {
 					estimatedSizeKB = int(dbSizeBytes / 1024)
 				} else {
 					LogWarn("⚠️ [ESTIMATE] Failed to get estimated size for %s: %v", dbName, err)
@@ -383,7 +413,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 				}
 
 				LogDebug("💾 [BACKUP] Worker-%d: Starting mariadb-binlog incremental backup for database: %s", workerID, dbName)
-				backupResult := executeIncrementalDatabaseBackup(dbName, request.JobID, config, latestBackupTime)
+				backupResult := executeIncrementalDatabaseBackup(dbName, request.JobID, config, latestBackupTime, mysqlPool)
 
 				LogDebug("🔒 [WORKER-%d] Setting job status to 'running' for %s", workerID, dbName)
 				mu.Lock()
@@ -392,7 +422,7 @@ func executeIncBackup(request BackupIncRequest, config *Config) {
 					totalInc++
 
 					// Add database disk size to total
-					if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
+					if dbSizeBytes, err := getDatabaseSize(dbName, mysqlPool); err == nil {
 						totalDiskSizeKB += int(dbSizeBytes / 1024)
 						LogDebug("📏 [DISK-SIZE] Added %d KB disk size for %s to total", int(dbSizeBytes/1024), dbName)
 					} else {
@@ -455,73 +485,29 @@ type IncrementalDatabaseBackupResult struct {
 }
 
 // executeIncrementalDatabaseBackup executes incremental backup for a single database using mariadb-binlog
-func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, startTime time.Time) IncrementalDatabaseBackupResult {
+func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, startTime time.Time, mysqlPool *sql.DB) IncrementalDatabaseBackupResult {
 	LogDebug("🏗️ [INC-BACKUP-SETUP] Setting up incremental backup for database: %s, JobID: %s", dbName, jobID)
 
-	// Test MySQL connection with timeout before starting backup
-	LogDebug("🔍 [CONNECTION-TEST] Testing MySQL connection before incremental backup for %s", dbName)
-	connectionTimeoutStart := time.Now()
-	connectionTimeoutDuration := 10 * time.Minute
+	// Test MySQL connection using the shared pool (no need for timeout loop since pool is already established)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := mysqlPool.PingContext(pingCtx)
+	cancel()
 
-	for {
-		// Test connection
-		dsn, err := buildMySQLDSN(config)
-		if err != nil {
-			LogError("❌ [CONNECTION-TEST] Failed to build DSN for %s: %v", dbName, err)
-			break
+	if err != nil {
+		LogError("❌ [CONNECTION-TEST] MySQL connection pool ping failed for %s: %v", dbName, err)
+		updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", fmt.Sprintf("MySQL connection pool ping failed: %v", err))
+		if updateErr != nil {
+			LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
 		}
-
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			LogError("❌ [CONNECTION-TEST] Failed to connect to MySQL for %s: %v", dbName, err)
-			break
-		}
-
-		// Test ping with timeout
-		pingCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = db.PingContext(pingCtx)
-		cancel()
-		db.Close()
-
-		if err == nil {
-			LogDebug("✅ [CONNECTION-TEST] MySQL connection successful for %s", dbName)
-			break
-		}
-
-		// Check if we've exceeded the 10-minute timeout
-		if time.Since(connectionTimeoutStart) > connectionTimeoutDuration {
-			LogError("❌ [CONNECTION-TIMEOUT] MySQL connection failed for more than 10 minutes, marking process as failed and stopping all backups")
-
-			// Mark this database as failed due to connection timeout
-			updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", "MySQL connection failed for more than 10 minutes - process failed")
-			if updateErr != nil {
-				LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
-			}
-
-			// Signal global abort to stop all backup processes
-			SignalGlobalBackupAbort()
-
-			return IncrementalDatabaseBackupResult{
-				Success:      false,
-				ErrorMessage: "MySQL connection failed for more than 10 minutes - process failed",
-			}
-		}
-
-		LogWarn("⚠️ [CONNECTION-TEST] MySQL connection failed for %s, retrying in 30 seconds...", dbName)
-		time.Sleep(30 * time.Second)
-
-		// Check for global abort
-		if CheckGlobalBackupAbort() {
-			LogWarn("⚠️ [CONNECTION-TEST] Incremental backup aborted while testing connection for %s", dbName)
-			return IncrementalDatabaseBackupResult{
-				Success:      false,
-				ErrorMessage: "Backup aborted while testing connection",
-			}
+		return IncrementalDatabaseBackupResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("MySQL connection pool ping failed: %v", err),
 		}
 	}
+	LogDebug("✅ [CONNECTION-TEST] MySQL connection pool is healthy for %s", dbName)
 
 	backupDir := filepath.Join(config.Backup.BackupDir, dbName)
-	err := os.MkdirAll(backupDir, 0755)
+	err = os.MkdirAll(backupDir, 0755)
 	if err != nil {
 		LogError("❌ [DIRECTORY-ERROR] Failed to create backup directory %s: %v", backupDir, err)
 
@@ -548,7 +534,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 
 	tempFileName := fmt.Sprintf("temp_inc_%s_%s%s", dbName, time.Now().Format("20060102_150405.000000"), extension)
 	tempFilePath := filepath.Join(backupDir, tempFileName)
-	cmd := buildMariadbBinlogCommand(dbName, tempFilePath, config, startTime)
+	cmd := buildMariadbBinlogCommand(dbName, tempFilePath, config, startTime, mysqlPool)
 
 	backupStartTime := startTime // Use the calculated start time, not current time
 	LogDebug("🚀 [EXECUTE] Starting mariadb-binlog process for %s", dbName)
@@ -796,7 +782,7 @@ func executeIncrementalDatabaseBackup(dbName, jobID string, config *Config, star
 }
 
 // buildMariadbBinlogCommand builds the mariadb-binlog command with all necessary arguments
-func buildMariadbBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time) *exec.Cmd {
+func buildMariadbBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time, mysqlPool *sql.DB) *exec.Cmd {
 	// Check if we're on Windows
 	isWindows := runtime.GOOS == "windows"
 
@@ -805,17 +791,17 @@ func buildMariadbBinlogCommand(dbName, outputPath string, config *Config, startT
 
 	if isWindows {
 		// Windows: Simple mariadb-binlog command (no nice, no gzip)
-		cmd = buildWindowsBinlogCommand(dbName, outputPath, config, startTime)
+		cmd = buildWindowsBinlogCommand(dbName, outputPath, config, startTime, mysqlPool)
 	} else {
 		// Linux: Full command with nice and optional gzip
-		cmd = buildLinuxBinlogCommand(dbName, outputPath, config, startTime)
+		cmd = buildLinuxBinlogCommand(dbName, outputPath, config, startTime, mysqlPool)
 	}
 
 	return cmd
 }
 
 // buildWindowsBinlogCommand builds command for Windows (no nice, no gzip)
-func buildWindowsBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time) *exec.Cmd {
+func buildWindowsBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time, mysqlPool *sql.DB) *exec.Cmd {
 	// Start with the binary path
 	cmd := exec.Command(config.Database.BinaryBinLog)
 
@@ -831,7 +817,7 @@ func buildWindowsBinlogCommand(dbName, outputPath string, config *Config, startT
 	cmd.Args = append(cmd.Args, "--start-datetime="+startTimeStr)
 
 	// Add binlog files from config
-	binlogFiles := getBinlogFiles(config)
+	binlogFiles := getBinlogFiles(mysqlPool)
 	if len(binlogFiles) > 0 {
 		cmd.Args = append(cmd.Args, binlogFiles...)
 	}
@@ -856,24 +842,24 @@ func buildWindowsBinlogCommand(dbName, outputPath string, config *Config, startT
 }
 
 // buildLinuxBinlogCommand builds command for Linux with nice and optional gzip
-func buildLinuxBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time) *exec.Cmd {
+func buildLinuxBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time, mysqlPool *sql.DB) *exec.Cmd {
 	var cmd *exec.Cmd
 
 	if config.Backup.CompressionLevel > 0 {
 		// Use shell command with nice and gzip
-		cmd = buildLinuxCompressedBinlogCommand(dbName, outputPath, config, startTime)
+		cmd = buildLinuxCompressedBinlogCommand(dbName, outputPath, config, startTime, mysqlPool)
 	} else {
 		// Use shell command with just nice
-		cmd = buildLinuxUncompressedBinlogCommand(dbName, outputPath, config, startTime)
+		cmd = buildLinuxUncompressedBinlogCommand(dbName, outputPath, config, startTime, mysqlPool)
 	}
 
 	return cmd
 }
 
 // buildLinuxCompressedBinlogCommand builds Linux command with nice and gzip
-func buildLinuxCompressedBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time) *exec.Cmd {
+func buildLinuxCompressedBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time, mysqlPool *sql.DB) *exec.Cmd {
 	// Build mariadb-binlog command
-	binlogCmd := buildMariadbBinlogArgs(dbName, config, startTime)
+	binlogCmd := buildMariadbBinlogArgs(dbName, config, startTime, mysqlPool)
 
 	// Create shell command: nice -n $level mariadb-binlog ... | gzip -$level > output.gz
 	niceLevel := config.Backup.NiceLevel
@@ -892,9 +878,9 @@ func buildLinuxCompressedBinlogCommand(dbName, outputPath string, config *Config
 }
 
 // buildLinuxUncompressedBinlogCommand builds Linux command with just nice
-func buildLinuxUncompressedBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time) *exec.Cmd {
+func buildLinuxUncompressedBinlogCommand(dbName, outputPath string, config *Config, startTime time.Time, mysqlPool *sql.DB) *exec.Cmd {
 	// Build mariadb-binlog command
-	binlogCmd := buildMariadbBinlogArgs(dbName, config, startTime)
+	binlogCmd := buildMariadbBinlogArgs(dbName, config, startTime, mysqlPool)
 
 	// Create shell command: nice -n $level mariadb-binlog ... > output.sql
 	niceLevel := config.Backup.NiceLevel
@@ -911,7 +897,7 @@ func buildLinuxUncompressedBinlogCommand(dbName, outputPath string, config *Conf
 }
 
 // buildMariadbBinlogArgs builds the mariadb-binlog arguments without executing
-func buildMariadbBinlogArgs(dbName string, config *Config, startTime time.Time) []string {
+func buildMariadbBinlogArgs(dbName string, config *Config, startTime time.Time, mysqlPool *sql.DB) []string {
 	var args []string
 
 	// Add binary path
@@ -929,7 +915,7 @@ func buildMariadbBinlogArgs(dbName string, config *Config, startTime time.Time) 
 	args = append(args, "--start-datetime="+startTimeStr)
 
 	// Add binlog files from config
-	binlogFiles := getBinlogFiles(config)
+	binlogFiles := getBinlogFiles(mysqlPool)
 	if len(binlogFiles) > 0 {
 		args = append(args, binlogFiles...)
 	}
@@ -950,28 +936,10 @@ func buildMariadbBinlogArgs(dbName string, config *Config, startTime time.Time) 
 }
 
 // getBinlogFiles gets the list of binlog files by querying the database for log_bin_basename
-func getBinlogFiles(config *Config) []string {
-	// Get binlog basename from database
-	dsn, err := buildMySQLDSN(config)
-	if err != nil {
-		LogWarn("⚠️ [BINLOG-FILES] Failed to build DSN: %v", err)
-		return []string{}
-	}
-
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		LogWarn("⚠️ [BINLOG-FILES] Failed to connect to database: %v", err)
-		return []string{}
-	}
-	defer db.Close()
-
-	if err := db.Ping(); err != nil {
-		LogWarn("⚠️ [BINLOG-FILES] Database connection failed: %v", err)
-		return []string{}
-	}
-
+func getBinlogFiles(mysqlPool *sql.DB) []string {
+	// Query binlog basename using shared connection pool
 	var binlogBasename string
-	err = db.QueryRow("SHOW VARIABLES LIKE 'log_bin_basename'").Scan(&binlogBasename, &binlogBasename)
+	err := mysqlPool.QueryRow("SHOW VARIABLES LIKE 'log_bin_basename'").Scan(&binlogBasename, &binlogBasename)
 	if err != nil {
 		LogWarn("⚠️ [BINLOG-FILES] Failed to query log_bin_basename: %v", err)
 		return []string{}

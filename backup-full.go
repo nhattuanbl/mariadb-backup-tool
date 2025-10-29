@@ -99,6 +99,36 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 		backupType = "auto-full"
 	}
 
+	// Create shared MySQL connection pool for all workers
+	// Limit pool to Parallel Processes * 3 (each worker may use 3-4 connections)
+	dsn, err := buildMySQLDSN(config)
+	if err != nil {
+		LogError("❌ [CONNECTION-POOL] Failed to build DSN: %v", err)
+		return
+	}
+
+	mysqlPool, err := sql.Open("mysql", dsn)
+	if err != nil {
+		LogError("❌ [CONNECTION-POOL] Failed to create MySQL connection pool: %v", err)
+		return
+	}
+	defer mysqlPool.Close()
+
+	// Configure connection pool to limit connections to Parallel * 3
+	maxConns := config.Backup.Parallel * 3
+	mysqlPool.SetMaxOpenConns(maxConns)
+	mysqlPool.SetMaxIdleConns(config.Backup.Parallel)
+	mysqlPool.SetConnMaxLifetime(30 * time.Minute)
+
+	// Test the connection pool
+	if err := mysqlPool.Ping(); err != nil {
+		LogError("❌ [CONNECTION-POOL] Failed to ping MySQL connection pool: %v", err)
+		mysqlPool.Close()
+		return
+	}
+
+	LogInfo("✅ [CONNECTION-POOL] MySQL connection pool created - MaxOpen: %d, MaxIdle: %d", maxConns, config.Backup.Parallel)
+
 	processQueue := make(chan string, len(request.Databases))
 	activeProcesses := make(chan struct{}, config.Backup.Parallel)
 	var wg sync.WaitGroup
@@ -217,7 +247,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 				LogDebug("🚀 [WORKER-%d] Starting full backup for database: %s", workerID, dbName)
 
 				estimatedSizeKB := 0
-				if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
+				if dbSizeBytes, err := getDatabaseSize(dbName, mysqlPool); err == nil {
 					estimatedSizeKB = int(dbSizeBytes / 1024)
 				} else {
 					LogWarn("⚠️ [ESTIMATE] Failed to get estimated size for %s: %v", dbName, err)
@@ -256,7 +286,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						go broadcastJobsUpdate()
 					}
 
-					optimizeResult := optimizeDatabaseWithProgress(dbName, request.JobID, config)
+					optimizeResult := optimizeDatabaseWithProgress(dbName, request.JobID, config, mysqlPool)
 					if !optimizeResult.Success {
 						LogWarn("⚠️ [OPTIMIZE] Worker-%d: Database optimization failed for %s: %s", workerID, dbName, optimizeResult.ErrorMessage)
 
@@ -289,7 +319,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 				}
 
 				LogDebug("💾 [BACKUP] Worker-%d: Starting mysqldump backup for database: %s", workerID, dbName)
-				backupResult := executeDatabaseBackup(dbName, request.JobID, config)
+				backupResult := executeDatabaseBackup(dbName, request.JobID, config, mysqlPool)
 
 				LogDebug("🔒 [WORKER-%d]Setting job status to 'optimizing'for %s", workerID, dbName)
 				mu.Lock()
@@ -298,7 +328,7 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 					totalFull++
 
 					// Add database disk size to total
-					if dbSizeBytes, err := getDatabaseSize(dbName, config); err == nil {
+					if dbSizeBytes, err := getDatabaseSize(dbName, mysqlPool); err == nil {
 						totalDiskSizeKB += int(dbSizeBytes / 1024)
 						LogDebug("📏 [DISK-SIZE] Added %d KB disk size for %s to total", int(dbSizeBytes/1024), dbName)
 					} else {
@@ -365,73 +395,29 @@ type DatabaseOptimizeResult struct {
 	ErrorMessage string
 }
 
-func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupResult {
+func executeDatabaseBackup(dbName, jobID string, config *Config, mysqlPool *sql.DB) DatabaseBackupResult {
 	LogDebug("🏗️ [BACKUP-SETUP] Setting up backup for database: %s, JobID: %s", dbName, jobID)
 
-	// Test MySQL connection with timeout before starting backup
-	LogDebug("🔍 [CONNECTION-TEST] Testing MySQL connection before backup for %s", dbName)
-	connectionTimeoutStart := time.Now()
-	connectionTimeoutDuration := 10 * time.Minute
+	// Test MySQL connection using the shared pool (no need for timeout loop since pool is already established)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := mysqlPool.PingContext(pingCtx)
+	cancel()
 
-	for {
-		// Test connection
-		dsn, err := buildMySQLDSN(config)
-		if err != nil {
-			LogError("❌ [CONNECTION-TEST] Failed to build DSN for %s: %v", dbName, err)
-			break
+	if err != nil {
+		LogError("❌ [CONNECTION-TEST] MySQL connection pool ping failed for %s: %v", dbName, err)
+		updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", fmt.Sprintf("MySQL connection pool ping failed: %v", err))
+		if updateErr != nil {
+			LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
 		}
-
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			LogError("❌ [CONNECTION-TEST] Failed to connect to MySQL for %s: %v", dbName, err)
-			break
-		}
-
-		// Test ping with timeout
-		pingCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = db.PingContext(pingCtx)
-		cancel()
-		db.Close()
-
-		if err == nil {
-			LogDebug("✅ [CONNECTION-TEST] MySQL connection successful for %s", dbName)
-			break
-		}
-
-		// Check if we've exceeded the 10-minute timeout
-		if time.Since(connectionTimeoutStart) > connectionTimeoutDuration {
-			LogError("❌ [CONNECTION-TIMEOUT] MySQL connection failed for more than 10 minutes, marking process as failed and stopping all backups")
-
-			// Mark this database as failed due to connection timeout
-			updateErr := CompleteBackupJob(jobID, dbName, false, 0, "", "MySQL connection failed for more than 10 minutes - process failed")
-			if updateErr != nil {
-				LogError("❌ [SQLITE-ERROR] Failed to update job status to failed for %s: %v", dbName, updateErr)
-			}
-
-			// Signal global abort to stop all backup processes
-			SignalGlobalBackupAbort()
-
-			return DatabaseBackupResult{
-				Success:      false,
-				ErrorMessage: "MySQL connection failed for more than 10 minutes - process failed",
-			}
-		}
-
-		LogWarn("⚠️ [CONNECTION-TEST] MySQL connection failed for %s, retrying in 30 seconds...", dbName)
-		time.Sleep(30 * time.Second)
-
-		// Check for global abort
-		if CheckGlobalBackupAbort() {
-			LogWarn("⚠️ [CONNECTION-TEST] Backup aborted while testing connection for %s", dbName)
-			return DatabaseBackupResult{
-				Success:      false,
-				ErrorMessage: "Backup aborted while testing connection",
-			}
+		return DatabaseBackupResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("MySQL connection pool ping failed: %v", err),
 		}
 	}
+	LogDebug("✅ [CONNECTION-TEST] MySQL connection pool is healthy for %s", dbName)
 
 	backupDir := filepath.Join(config.Backup.BackupDir, dbName)
-	err := os.MkdirAll(backupDir, 0755)
+	err = os.MkdirAll(backupDir, 0755)
 	if err != nil {
 		LogError("❌ [DIRECTORY-ERROR] Failed to create backup directory %s: %v", backupDir, err)
 
@@ -491,7 +477,7 @@ func executeDatabaseBackup(dbName, jobID string, config *Config) DatabaseBackupR
 
 	// Get table count for progress tracking
 	LogDebug("📏 [SIZE-INFO] Getting table count for %s", dbName)
-	totalTables, err := getTableCount(dbName, config)
+	totalTables, err := getTableCount(dbName, mysqlPool)
 	if err != nil {
 		LogWarn("⚠️ [SIZE-INFO] Failed to get table count for %s: %v", dbName, err)
 		totalTables = 1 // Fallback to prevent division by zero
@@ -1297,12 +1283,12 @@ func isMySQLServiceRunning(serviceName string) bool {
 }
 
 // optimizeDatabaseWithProgress runs mariadb-check/mysqlcheck with real progress tracking
-func optimizeDatabaseWithProgress(dbName, jobID string, config *Config) DatabaseOptimizeResult {
+func optimizeDatabaseWithProgress(dbName, jobID string, config *Config, mysqlPool *sql.DB) DatabaseOptimizeResult {
 	LogDebug("🔧 [OPTIMIZE-CONFIG] Optimization settings - Binary: %s, Options: %s",
 		config.Database.BinaryCheck, config.Backup.MariadbCheckOptions)
 
 	// First, get total table count for progress calculation
-	totalTables, err := getTableCount(dbName, config)
+	totalTables, err := getTableCount(dbName, mysqlPool)
 	if err != nil {
 		LogWarn("⚠️ [OPTIMIZE-TABLES] Failed to get table count for %s: %v", dbName, err)
 		totalTables = 1 // Fallback to prevent division by zero
@@ -1472,25 +1458,11 @@ func buildOptimizeArgs(dbName string, config *Config) []string {
 }
 
 // getTableCount gets the total number of tables in a database
-func getTableCount(dbName string, config *Config) (int, error) {
-	dsn, err := buildMySQLDSN(config)
-	if err != nil {
-		LogError("❌ [TABLE-COUNT] Failed to build DSN: %v", err)
-		return 0, err
-	}
-
-	// Connect to database
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		LogError("❌ [TABLE-COUNT] Failed to connect to database: %v", err)
-		return 0, err
-	}
-	defer db.Close()
-
-	// Query table count
+func getTableCount(dbName string, mysqlPool *sql.DB) (int, error) {
+	// Query table count using shared connection pool
 	query := "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ?"
 	var count int
-	err = db.QueryRow(query, dbName).Scan(&count)
+	err := mysqlPool.QueryRow(query, dbName).Scan(&count)
 	if err != nil {
 		LogError("❌ [TABLE-COUNT] Failed to query table count: %v", err)
 		return 0, err
@@ -1500,21 +1472,8 @@ func getTableCount(dbName string, config *Config) (int, error) {
 }
 
 // getDatabaseSize gets the total size of a database in bytes
-func getDatabaseSize(dbName string, config *Config) (int64, error) {
-	dsn, err := buildMySQLDSN(config)
-	if err != nil {
-		LogError("❌ [DB-SIZE] Failed to build DSN: %v", err)
-		return 0, err
-	}
-
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		LogError("❌ [DB-SIZE] Failed to connect to database: %v", err)
-		return 0, err
-	}
-	defer db.Close()
-
-	// Query database size
+func getDatabaseSize(dbName string, mysqlPool *sql.DB) (int64, error) {
+	// Query database size using shared connection pool
 	query := `
 		SELECT 
 			COALESCE(SUM(data_length + index_length), 0) as size_bytes
@@ -1522,7 +1481,7 @@ func getDatabaseSize(dbName string, config *Config) (int64, error) {
 		WHERE table_schema = ?
 	`
 	var sizeBytes int64
-	err = db.QueryRow(query, dbName).Scan(&sizeBytes)
+	err := mysqlPool.QueryRow(query, dbName).Scan(&sizeBytes)
 	if err != nil {
 		LogError("❌ [DB-SIZE] Failed to query database size: %v", err)
 		return 0, err
@@ -1535,25 +1494,10 @@ func getDatabaseSize(dbName string, config *Config) (int64, error) {
 }
 
 // getTableSizes gets individual table sizes for more granular progress tracking
-func getTableSizes(dbName string, config *Config) ([]TableSize, error) {
+func getTableSizes(dbName string, mysqlPool *sql.DB) ([]TableSize, error) {
 	LogDebug("📊 [TABLE-SIZES] Getting individual table sizes for: %s", dbName)
 
-	// Build connection string
-	dsn, err := buildMySQLDSN(config)
-	if err != nil {
-		LogError("❌ [TABLE-SIZES] Failed to build DSN: %v", err)
-		return nil, err
-	}
-
-	// Connect to database
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		LogError("❌ [TABLE-SIZES] Failed to connect to database: %v", err)
-		return nil, err
-	}
-	defer db.Close()
-
-	// Query table sizes
+	// Query table sizes using shared connection pool
 	query := `
 		SELECT 
 			table_name,
@@ -1564,7 +1508,7 @@ func getTableSizes(dbName string, config *Config) ([]TableSize, error) {
 		ORDER BY (data_length + index_length) DESC
 	`
 
-	rows, err := db.Query(query, dbName)
+	rows, err := mysqlPool.Query(query, dbName)
 	if err != nil {
 		LogError("❌ [TABLE-SIZES] Failed to query table sizes: %v", err)
 		return nil, err
