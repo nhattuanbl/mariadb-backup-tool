@@ -31,6 +31,17 @@ var progressUpdateQueue chan ProgressUpdate
 var progressBatchSize = 10
 var progressBatchTimeout = 2 * time.Second
 
+// Batch update system for status updates
+type StatusUpdate struct {
+	JobID        string
+	DatabaseName string
+	Status       string
+	Timestamp    time.Time
+}
+
+var statusUpdateQueue chan StatusUpdate
+var statusBatchTimeout = 2 * time.Second
+
 // Database operation metrics
 type DatabaseMetrics struct {
 	TotalOperations   int64
@@ -90,6 +101,10 @@ func InitDB(dbFile string) error {
 	// Initialize progress update batching system
 	progressUpdateQueue = make(chan ProgressUpdate, 500) // Buffer for 500 progress updates
 	startProgressBatchWorker()
+
+	// Initialize status update batching system
+	statusUpdateQueue = make(chan StatusUpdate, 500) // Buffer for 500 status updates
+	startStatusBatchWorker()
 
 	// Initialize metrics
 	dbMetrics.LastResetTime = time.Now()
@@ -267,6 +282,94 @@ func processProgressBatch(batch []ProgressUpdate) {
 	}
 }
 
+// startStatusBatchWorker starts a background worker to batch status updates
+func startStatusBatchWorker() {
+	go func() {
+		var batch []StatusUpdate
+		ticker := time.NewTicker(statusBatchTimeout)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case update := <-statusUpdateQueue:
+				batch = append(batch, update)
+
+				// Process batch immediately if it's a critical status (done/failed)
+				// These statuses are important and should be persisted quickly
+				if update.Status == "done" || update.Status == "failed" {
+					// Process all pending updates including this critical one
+					processStatusBatch(batch)
+					batch = batch[:0] // Reset batch
+				}
+
+			case <-ticker.C:
+				// Process any remaining updates in the batch every 2 seconds
+				if len(batch) > 0 {
+					processStatusBatch(batch)
+					batch = batch[:0] // Reset batch
+				}
+			}
+		}
+	}()
+}
+
+// processStatusBatch processes a batch of status updates
+func processStatusBatch(batch []StatusUpdate) {
+	if len(batch) == 0 {
+		return
+	}
+
+	// Group updates by job_id and database_name, keeping the most recent status for each
+	updateMap := make(map[string]StatusUpdate)
+	for _, update := range batch {
+		key := update.JobID + "|" + update.DatabaseName
+		// Keep the most recent update for each job/database combination
+		if existing, exists := updateMap[key]; !exists || update.Timestamp.After(existing.Timestamp) {
+			updateMap[key] = update
+		}
+	}
+
+	// Execute batch update with transaction
+	err := executeWithRetry(func() error {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		for _, update := range updateMap {
+			var query string
+			if update.Status == "done" || update.Status == "failed" {
+				query = `UPDATE backup_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE job_id = ? AND database_name = ?`
+				_, err := tx.Exec(query, update.Status, update.JobID, update.DatabaseName)
+				if err != nil {
+					return err
+				}
+			} else {
+				query = `UPDATE backup_jobs SET status = ? WHERE job_id = ? AND database_name = ?`
+				_, err := tx.Exec(query, update.Status, update.JobID, update.DatabaseName)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		return tx.Commit()
+	}, fmt.Sprintf("BatchStatusUpdate(%d updates)", len(updateMap)), 3)
+
+	if err != nil {
+		LogError("Failed to process status batch: %v", err)
+	} else {
+		// Broadcast job update to UI asynchronously
+		go broadcastJobsUpdate()
+
+		// Record batch operation metrics
+		dbMetrics.mutex.Lock()
+		dbMetrics.BatchOperations++
+		dbMetrics.mutex.Unlock()
+	}
+}
+
 func createTables() error {
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS backup_jobs (
@@ -353,25 +456,37 @@ func UpdateBackupJobProgress(jobID, databaseName string, progress int) error {
 }
 
 func UpdateBackupJobStatusByDB(jobID, databaseName, status string) error {
-	var query string
-	var args []interface{}
+	// Queue the status update for batching instead of immediate execution
+	select {
+	case statusUpdateQueue <- StatusUpdate{
+		JobID:        jobID,
+		DatabaseName: databaseName,
+		Status:       status,
+		Timestamp:    time.Now(),
+	}:
+		return nil // Successfully queued
+	default:
+		// Queue is full, fall back to immediate update with retry
+		var query string
+		var args []interface{}
 
-	if status == "done" || status == "failed" {
-		query = `UPDATE backup_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE job_id = ? AND database_name = ?`
-		args = []interface{}{status, jobID, databaseName}
-	} else {
-		query = `UPDATE backup_jobs SET status = ? WHERE job_id = ? AND database_name = ?`
-		args = []interface{}{status, jobID, databaseName}
-	}
-
-	return executeWithRetry(func() error {
-		_, err := db.Exec(query, args...)
-		if err == nil {
-			// Broadcast job update to UI asynchronously to avoid blocking
-			go broadcastJobsUpdate()
+		if status == "done" || status == "failed" {
+			query = `UPDATE backup_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE job_id = ? AND database_name = ?`
+			args = []interface{}{status, jobID, databaseName}
+		} else {
+			query = `UPDATE backup_jobs SET status = ? WHERE job_id = ? AND database_name = ?`
+			args = []interface{}{status, jobID, databaseName}
 		}
-		return err
-	}, fmt.Sprintf("UpdateBackupJobStatusByDB(%s/%s)", jobID, databaseName), 3)
+
+		return executeWithRetry(func() error {
+			_, err := db.Exec(query, args...)
+			if err == nil {
+				// Broadcast job update to UI asynchronously to avoid blocking
+				go broadcastJobsUpdate()
+			}
+			return err
+		}, fmt.Sprintf("UpdateBackupJobStatusByDB(%s/%s)", jobID, databaseName), 3)
+	}
 }
 
 func UpdateBackupJobError(jobID, databaseName, errorMessage string) error {
@@ -1133,6 +1248,100 @@ func GetBackupJobByID(jobID string) (map[string]interface{}, error) {
 	}
 
 	return job, nil
+}
+
+// GetFailedBackupJobsByJobID returns all failed backup jobs for a specific job_id
+func GetFailedBackupJobsByJobID(jobID string) ([]map[string]interface{}, error) {
+	query := `SELECT id, job_id, database_name, backup_type, status, progress, 
+		started_at, completed_at, estimated_size_kb, actual_size_kb, backup_file_path, error_message
+		FROM backup_jobs 
+		WHERE job_id = ? AND status = 'failed'
+		ORDER BY database_name`
+
+	rows, err := db.Query(query, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var jobIDStr, databaseName, backupType, status string
+		var progress, estimatedSizeKB, actualSizeKB sql.NullInt64
+		var startedAt, completedAt, backupFilePath, errorMessage sql.NullString
+
+		err := rows.Scan(&id, &jobIDStr, &databaseName, &backupType, &status, &progress,
+			&startedAt, &completedAt, &estimatedSizeKB, &actualSizeKB, &backupFilePath, &errorMessage)
+		if err != nil {
+			return nil, err
+		}
+
+		// Convert sql.NullString to regular string
+		startedAtStr := ""
+		if startedAt.Valid {
+			startedAtStr = startedAt.String
+		}
+		completedAtStr := ""
+		if completedAt.Valid {
+			completedAtStr = completedAt.String
+		}
+		backupFilePathStr := ""
+		if backupFilePath.Valid {
+			backupFilePathStr = backupFilePath.String
+		}
+		errorMessageStr := ""
+		if errorMessage.Valid {
+			errorMessageStr = errorMessage.String
+		}
+
+		job := map[string]interface{}{
+			"id":                id,
+			"job_id":            jobIDStr,
+			"database_name":     databaseName,
+			"backup_type":       backupType,
+			"status":            status,
+			"progress":          progress.Int64,
+			"started_at":        startedAtStr,
+			"completed_at":      completedAtStr,
+			"estimated_size_kb": estimatedSizeKB.Int64,
+			"actual_size_kb":    actualSizeKB.Int64,
+			"backup_file_path":  backupFilePathStr,
+			"error_message":     errorMessageStr,
+		}
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs, nil
+}
+
+// ResetFailedBackupJobs resets failed backup jobs back to running status for retry
+func ResetFailedBackupJobs(jobID string) error {
+	query := `UPDATE backup_jobs 
+		SET status = 'running', 
+			progress = 0, 
+			started_at = CURRENT_TIMESTAMP, 
+			completed_at = NULL, 
+			error_message = NULL,
+			actual_size_kb = NULL,
+			backup_file_path = NULL
+		WHERE job_id = ? AND status = 'failed'`
+
+	_, err := db.Exec(query, jobID)
+	return err
+}
+
+// ResetBackupSummaryToRunning resets backup summary state back to running and updates failed count
+func ResetBackupSummaryToRunning(jobID string, failedCount int) error {
+	query := `UPDATE backup_summary 
+		SET state = 'running', 
+			completed_at = NULL,
+			total_failed = ?
+		WHERE job_id = ?`
+
+	_, err := db.Exec(query, failedCount, jobID)
+	return err
 }
 
 // GetBackupHistory returns paginated backup history with search and filtering
