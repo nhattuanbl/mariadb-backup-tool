@@ -87,12 +87,108 @@ func StartFullBackup(request BackupFullRequest) BackupFullResponse {
 	return response
 }
 
+// RetryFailedBackups retries all failed databases for an existing backup job
+func RetryFailedBackups(jobID string) error {
+	LogInfo("🔄 [RETRY] Starting retry for failed databases - JobID: %s", jobID)
+
+	// Get the backup summary to determine backup mode
+	summary, err := GetBackupSummaryByJobID(jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get backup summary: %v", err)
+	}
+	if summary == nil {
+		return fmt.Errorf("backup summary not found for job_id: %s", jobID)
+	}
+
+	// Check if summary is completed
+	if summary["state"].(string) != "completed" {
+		return fmt.Errorf("backup job %s is not completed, cannot retry", jobID)
+	}
+
+	// Get failed backup jobs
+	failedJobs, err := GetFailedBackupJobsByJobID(jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get failed backup jobs: %v", err)
+	}
+	if len(failedJobs) == 0 {
+		return fmt.Errorf("no failed backup jobs found for job_id: %s", jobID)
+	}
+
+	LogInfo("🔄 [RETRY] Found %d failed databases to retry", len(failedJobs))
+
+	// Get backup mode from summary
+	backupMode := summary["backup_mode"].(string)
+
+	// Reset failed jobs to running status
+	err = ResetFailedBackupJobs(jobID)
+	if err != nil {
+		return fmt.Errorf("failed to reset backup jobs: %v", err)
+	}
+
+	// Reset backup summary state to running and update failed count
+	err = ResetBackupSummaryToRunning(jobID, 0)
+	if err != nil {
+		return fmt.Errorf("failed to reset backup summary: %v", err)
+	}
+
+	// Extract database names from failed jobs
+	var databases []string
+	for _, job := range failedJobs {
+		dbName := job["database_name"].(string)
+		databases = append(databases, dbName)
+	}
+
+	// Load config
+	retryConfig, err := loadConfig("config.json")
+	if err != nil {
+		return fmt.Errorf("failed to load config for retry: %v", err)
+	}
+
+	// Create backup request for retry
+	retryRequest := BackupFullRequest{
+		JobID:       jobID,
+		Databases:   databases,
+		BackupMode:  backupMode,
+		RequestedBy: "retry",
+	}
+
+	// Execute retry backup in a goroutine
+	go executeFullBackup(retryRequest, retryConfig)
+
+	LogInfo("🔄 [RETRY] Retry started for %d failed databases", len(databases))
+	return nil
+}
+
 func executeFullBackup(request BackupFullRequest, config *Config) {
 	totalSizeKB := 0
 	totalDiskSizeKB := 0
 	totalFull := 0
 	totalFailed := 0
 	totalMySQLRestartTime := int64(0) // Total MySQL restart time in seconds
+
+	// For retries, get existing summary values to accumulate on top of them
+	var existingIncremental int
+	if request.RequestedBy == "retry" {
+		existingSummary, err := GetBackupSummaryByJobID(request.JobID)
+		if err == nil && existingSummary != nil {
+			// Use existing values as starting point
+			if val, ok := existingSummary["total_size_kb"].(int); ok {
+				totalSizeKB = val
+			}
+			if val, ok := existingSummary["total_disk_size"].(int); ok {
+				totalDiskSizeKB = val
+			}
+			if val, ok := existingSummary["total_full"].(int); ok {
+				totalFull = val
+			}
+			if val, ok := existingSummary["total_incremental"].(int); ok {
+				existingIncremental = val
+			}
+			// Don't use existing total_failed as we reset it to 0 when retrying
+			LogInfo("🔄 [RETRY] Starting with existing totals - Size: %d KB, Disk: %d KB, Full: %d, Incremental: %d",
+				totalSizeKB, totalDiskSizeKB, totalFull, existingIncremental)
+		}
+	}
 
 	backupType := "force-full"
 	if request.BackupMode == "auto" {
@@ -253,11 +349,18 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 					LogWarn("⚠️ [ESTIMATE] Failed to get estimated size for %s: %v", dbName, err)
 				}
 
-				err := CreateBackupJob(request.JobID, dbName, backupType, estimatedSizeKB)
-				if err != nil {
-					LogError("❌ [SQLITE-ERROR] Failed to create job for %s: %v", dbName, err)
+				// For retries, jobs already exist, so we only create if RequestedBy is not "retry"
+				if request.RequestedBy != "retry" {
+					err := CreateBackupJob(request.JobID, dbName, backupType, estimatedSizeKB)
+					if err != nil {
+						LogError("❌ [SQLITE-ERROR] Failed to create job for %s: %v", dbName, err)
+					} else {
+						LogDebug("✅ [SQLITE] Job record created for %s", dbName)
+						go broadcastJobsUpdate()
+					}
 				} else {
-					LogDebug("✅ [SQLITE] Job record created for %s", dbName)
+					// For retries, update existing job status and estimate if needed
+					LogDebug("🔄 [RETRY] Using existing job record for %s", dbName)
 					go broadcastJobsUpdate()
 				}
 
@@ -343,9 +446,14 @@ func executeFullBackup(request BackupFullRequest, config *Config) {
 						workerID, dbName, backupResult.ErrorMessage)
 				}
 
-				LogDebug("📊 [SUMMARY] Updating backup summary - JobID: %s, Size: %d KB, Disk Size: %d KB, Full: %d, Failed: %d",
-					request.JobID, totalSizeKB, totalDiskSizeKB, totalFull, totalFailed)
-				UpdateBackupSummary(request.JobID, totalSizeKB, totalDiskSizeKB, totalFull, 0, totalFailed)
+				// For retries, preserve existing incremental count
+				incrementalCount := 0
+				if request.RequestedBy == "retry" {
+					incrementalCount = existingIncremental
+				}
+				LogDebug("📊 [SUMMARY] Updating backup summary - JobID: %s, Size: %d KB, Disk Size: %d KB, Full: %d, Incremental: %d, Failed: %d",
+					request.JobID, totalSizeKB, totalDiskSizeKB, totalFull, incrementalCount, totalFailed)
+				UpdateBackupSummary(request.JobID, totalSizeKB, totalDiskSizeKB, totalFull, incrementalCount, totalFailed)
 				mu.Unlock()
 
 				<-activeProcesses
@@ -1149,28 +1257,20 @@ func getCurrentMemoryUsage() float64 {
 	return vmStat.UsedPercent
 }
 
-// shouldRestartMySQL checks if system memory usage exceeds the threshold
 func shouldRestartMySQL(config *Config) bool {
-	// Only check on Linux systems
 	if runtime.GOOS != "linux" {
-		LogDebug("⏭️ [MEMORY] Memory check skipped - not on Linux system (OS: %s)", runtime.GOOS)
 		return false
 	}
 
-	// Get current memory usage
 	memoryPercent := getCurrentMemoryUsage()
 	threshold := float64(config.Backup.MaxMemoryThreshold)
 
-	LogDebug("🧠 [MEMORY] Memory usage: %.2f%%, Threshold: %.2f%%", memoryPercent, threshold)
-
-	// Check if memory usage exceeds threshold
 	if memoryPercent > threshold {
 		LogWarn("⚠️ [MEMORY-THRESHOLD] Memory usage %.2f%% exceeds threshold %.2f%% - MySQL restart required",
 			memoryPercent, threshold)
 		return true
 	}
 
-	LogDebug("✅ [MEMORY-THRESHOLD] Memory usage %.2f%% is within threshold %.2f%%", memoryPercent, threshold)
 	return false
 }
 

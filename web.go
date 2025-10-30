@@ -156,6 +156,7 @@ func setupRoutes(config *Config) {
 	http.HandleFunc("/api/backup/download-file", requireAuth(handleDownloadBackupFile))
 	http.HandleFunc("/api/backup/download-group-zip", requireAuth(handleDownloadBackupGroupZip))
 	http.HandleFunc("/api/backup/delete-group", requireAuth(handleDeleteBackupGroup))
+	http.HandleFunc("/api/backup/retry", requireAuth(handleRetryBackup))
 	http.HandleFunc("/api/logging/status", requireAuth(handleLoggingStatus))
 	http.HandleFunc("/api/logs/stream", requireAuth(handleLogStream))
 	http.HandleFunc("/api/logs/delete", requireAuth(handleDeleteLogFile))
@@ -2044,6 +2045,57 @@ func handleStartBackup(w http.ResponseWriter, r *http.Request) {
 			"error":   "Invalid backup mode: " + requestData.BackupMode,
 		})
 	}
+}
+
+// handleRetryBackup handles retrying failed databases for a completed backup job
+func handleRetryBackup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var requestData struct {
+		JobID string `json:"job_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request format: " + err.Error(),
+		})
+		return
+	}
+
+	// Validate request
+	if requestData.JobID == "" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "job_id is required",
+		})
+		return
+	}
+
+	LogInfo("Retry backup request received - JobID: %s", requestData.JobID)
+
+	// Call retry function
+	err := RetryFailedBackups(requestData.JobID)
+	if err != nil {
+		LogError("Failed to retry backup for job %s: %v", requestData.JobID, err)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Retry started successfully",
+		"job_id":  requestData.JobID,
+	})
 }
 
 // handleStopBackups handles stopping all running backup processes

@@ -7061,6 +7061,31 @@ hr {
     flex-wrap: wrap;
     gap: 8px;
     margin-bottom: 6px;
+    align-items: center;
+}
+
+.summary-stats .retry-btn {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 4px 12px;
+}
+
+.btn-warning {
+    background: rgba(245, 158, 11, 0.2);
+    border-color: rgba(245, 158, 11, 0.4);
+    color: #f59e0b;
+    box-shadow: 0 2px 8px rgba(245, 158, 11, 0.2);
+}
+
+.btn-warning:hover {
+    background: rgba(245, 158, 11, 0.3);
+    border-color: rgba(245, 158, 11, 0.6);
+    box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.btn-warning:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .summary-stat {

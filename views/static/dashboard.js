@@ -544,6 +544,7 @@ function displayRecentActivity(data) {
                         <span class="summary-stat failed clickable-stat" onclick="event.stopPropagation(); navigateToBackupWithFilter('${summary.job_id}', 'failed')">❌ ${summary.total_failed} failed</span>
                         ${pendingCount > 0 ? `<span class="summary-stat warning">⏸️ ${pendingCount} pending</span>` : ''}
                         <span class="summary-stat success">📈 ${successRate}% success rate</span>
+                        ${summary.total_failed > 0 && summary.state === 'completed' ? `<button class="btn btn-sm btn-warning retry-btn" onclick="event.stopPropagation(); retryFailedBackups('${summary.job_id}')" title="Retry failed databases">🔄 Retry</button>` : ''}
                     </div>
                     <div class="summary-size">
                         <span class="size-label">Total Size:</span>
@@ -743,6 +744,57 @@ function clearBackupHistory() {
         // Re-enable button
         deleteBtn.disabled = false;
         deleteBtn.innerHTML = '<span class="btn-icon">🗑️</span>Delete History';
+    });
+}
+
+function retryFailedBackups(jobId) {
+    // Show confirmation dialog
+    if (!confirm('Are you sure you want to retry all failed databases for this backup? This will update the existing backup record.')) {
+        return;
+    }
+    
+    // Find and disable the retry button for this job
+    const retryButtons = document.querySelectorAll(`.retry-btn[onclick*="'${jobId}'"]`);
+    retryButtons.forEach(btn => {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Retrying...';
+    });
+    
+    // Call the API to retry failed backups
+    fetch('/api/backup/retry', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            job_id: jobId
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast('Retry started successfully!', 'success');
+            // Reload recent activity after a short delay
+            setTimeout(() => {
+                loadRecentActivity(recentActivityPagination.currentPage);
+            }, 2000);
+        } else {
+            showToast('Failed to retry backups: ' + (data.error || 'Unknown error'), 'error');
+            // Re-enable button on error
+            retryButtons.forEach(btn => {
+                btn.disabled = false;
+                btn.innerHTML = '🔄 Retry';
+            });
+        }
+    })
+    .catch(error => {
+        console.error('Error retrying backups:', error);
+        showToast('Error retrying backups: ' + error.message, 'error');
+        // Re-enable button on error
+        retryButtons.forEach(btn => {
+            btn.disabled = false;
+            btn.innerHTML = '🔄 Retry';
+        });
     });
 }
 
