@@ -500,6 +500,12 @@
 
         // Load data on page load
         document.addEventListener('DOMContentLoaded', function() {
+            // Initialize optimize button text on page load
+            const optimizeBtn = document.getElementById('optimizeBtn');
+            if (optimizeBtn && !window.isOptimizing) {
+                updateOptimizeButtonText();
+            }
+            
             checkTestResults();
             handleURLParameters(); // Handle URL parameters for filtering
             

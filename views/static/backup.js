@@ -1407,11 +1407,27 @@ function updateButtonStates(enabled) {
     // Optimize button should be enabled when system is ready (doesn't require selection)
     const optimizeBtn = document.getElementById('optimizeBtn');
     if (optimizeBtn) {
-        optimizeBtn.disabled = !enabled;
-        if (!enabled) {
-            optimizeBtn.classList.add('disabled');
-        } else {
-            optimizeBtn.classList.remove('disabled');
+        // Only update disabled state if not currently optimizing
+        if (!window.isOptimizing) {
+            const wasDisabled = optimizeBtn.disabled;
+            optimizeBtn.disabled = !enabled;
+            
+            // Ensure the disabled property is properly set
+            if (enabled) {
+                optimizeBtn.removeAttribute('disabled');
+                optimizeBtn.classList.remove('disabled');
+            } else {
+                optimizeBtn.setAttribute('disabled', 'disabled');
+                optimizeBtn.classList.add('disabled');
+            }
+            
+            // Update button text after enabling/disabling
+            updateOptimizeButtonText();
+            
+            // Debug: log if button state changed
+            if (wasDisabled !== optimizeBtn.disabled) {
+                console.log('Optimize button state changed:', { wasDisabled, nowDisabled: optimizeBtn.disabled, enabled });
+            }
         }
     }
     
@@ -1444,6 +1460,14 @@ function checkTestResults() {
             
             // Update button states
             updateButtonStates(buttonsEnabled);
+            
+            // If tests show buttons should be enabled, ensure optimize button text is updated
+            if (buttonsEnabled) {
+                const optimizeBtn = document.getElementById('optimizeBtn');
+                if (optimizeBtn && !window.isOptimizing) {
+                    updateOptimizeButtonText();
+                }
+            }
             
             // Show appropriate messages
             if (!buttonsEnabled) {
