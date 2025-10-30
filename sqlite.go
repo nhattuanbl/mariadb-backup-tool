@@ -40,7 +40,7 @@ type StatusUpdate struct {
 }
 
 var statusUpdateQueue chan StatusUpdate
-var statusBatchTimeout = 2 * time.Second
+var statusBatchTimeout = 1 * time.Second //persistant update
 
 // Database operation metrics
 type DatabaseMetrics struct {
