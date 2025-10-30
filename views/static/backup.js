@@ -1,6 +1,7 @@
 // MariaDB Backup Tool - Backup Management
 
 window.currentJobId = null;
+window.isOptimizing = false;
 
 window.startBackupAll = function() {
     // Check if buttons are enabled before proceeding
@@ -218,6 +219,7 @@ function updateBackupSelectedButton() {
     const checkboxes = document.querySelectorAll('input[name="databases"]:checked');
     const allCheckboxes = document.querySelectorAll('input[name="databases"]');
     const backupSelectedBtn = document.getElementById('backupSelectedBtn');
+    const optimizeBtn = document.getElementById('optimizeBtn');
     
     if (backupSelectedBtn) {
         const hasSelection = checkboxes.length > 0;
@@ -228,6 +230,16 @@ function updateBackupSelectedButton() {
             backupSelectedBtn.textContent = `⚡ Backup Selected (${checkboxes.length})`;
         } else {
             backupSelectedBtn.textContent = '⚡ Backup Selected';
+        }
+    }
+    
+    // Update optimize button text based on selection (only if not optimizing)
+    if (optimizeBtn && !window.isOptimizing) {
+        const hasSelection = checkboxes.length > 0;
+        if (hasSelection) {
+            optimizeBtn.textContent = `🔧 Optimize Selected (${checkboxes.length})`;
+        } else {
+            optimizeBtn.textContent = '🔧 Optimize All';
         }
     }
     
@@ -380,6 +392,202 @@ function startQuickBackup(mode) {
         console.error('Error starting backup:', error);
         showToast('Error starting backup', 'error');
     });
+}
+
+function startOptimize() {
+    const optimizeBtn = document.getElementById('optimizeBtn');
+    if (optimizeBtn.disabled) {
+        showToast('Please ensure database connection and binary validation are successful first.', 'warning');
+        return;
+    }
+    
+    // If already optimizing, stop it
+    if (window.isOptimizing) {
+        stopOptimizing();
+        return;
+    }
+    
+    const selectedDatabases = Array.from(document.querySelectorAll('input[name="databases"]:checked'))
+        .map(cb => cb.value);
+    
+    let databases = selectedDatabases;
+    
+    // If no databases selected, get all databases
+    if (databases.length === 0) {
+        const originalText = optimizeBtn.textContent;
+        optimizeBtn.disabled = true;
+        optimizeBtn.textContent = '🔄 Loading Databases...';
+        optimizeBtn.classList.add('loading');
+        
+        fetch('/api/databases')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.databases && data.databases.length > 0) {
+                    databases = data.databases;
+                    triggerOptimize(databases, optimizeBtn, originalText);
+                } else {
+                    showToast('No databases available to optimize.', 'warning');
+                    optimizeBtn.disabled = false;
+                    optimizeBtn.textContent = originalText;
+                    optimizeBtn.classList.remove('loading');
+                }
+            })
+            .catch(error => {
+                console.error('Error loading databases:', error);
+                showToast('Error loading databases', 'error');
+                optimizeBtn.disabled = false;
+                optimizeBtn.textContent = originalText;
+                optimizeBtn.classList.remove('loading');
+            });
+    } else {
+        triggerOptimize(databases, optimizeBtn, optimizeBtn.textContent);
+    }
+}
+
+function triggerOptimize(databases, optimizeBtn, originalText) {
+    // Store original button state
+    optimizeBtn.disabled = true;
+    optimizeBtn.textContent = '🔄 Starting Optimization...';
+    optimizeBtn.classList.add('loading');
+    
+    fetch('/api/optimize/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            databases: databases
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const dbCount = databases.length;
+            showToast(`Optimization started for ${dbCount} database${dbCount !== 1 ? 's' : ''}!`, 'success');
+            
+            // Mark as optimizing and update button
+            window.isOptimizing = true;
+            optimizeBtn.disabled = false;
+            optimizeBtn.textContent = '🛑 Stop Optimizing';
+            optimizeBtn.classList.remove('loading');
+            // Start status checking
+            startOptimizeStatusCheck();
+        } else {
+            showToast('Failed to start optimization: ' + data.error, 'error');
+            window.isOptimizing = false;
+            optimizeBtn.disabled = false;
+            optimizeBtn.textContent = originalText;
+            optimizeBtn.classList.remove('loading');
+        }
+    })
+    .catch(error => {
+        console.error('Error starting optimization:', error);
+        showToast('Error starting optimization', 'error');
+        window.isOptimizing = false;
+        optimizeBtn.disabled = false;
+        optimizeBtn.textContent = originalText;
+        optimizeBtn.classList.remove('loading');
+    });
+}
+
+function stopOptimizing() {
+    const optimizeBtn = document.getElementById('optimizeBtn');
+    if (!optimizeBtn || !window.isOptimizing) {
+        showToast('No optimization running to stop.', 'warning');
+        return;
+    }
+
+    // Confirm before stopping
+    if (!confirm('Are you sure you want to stop the optimization? This action cannot be undone.')) {
+        return;
+    }
+
+    const originalText = optimizeBtn.textContent;
+    optimizeBtn.disabled = true;
+    optimizeBtn.textContent = 'Stopping...';
+
+    fetch('/api/optimize/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast(data.message || 'Optimization stop signal sent!', 'success');
+            window.isOptimizing = false;
+            // Stop status checking
+            stopOptimizeStatusCheck();
+            // Update button text based on selection
+            updateOptimizeButtonText();
+        } else {
+            showToast('Failed to stop optimization: ' + (data.error || 'Unknown error'), 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Error stopping optimization:', error);
+        showToast('Error stopping optimization', 'error');
+    })
+    .finally(() => {
+        optimizeBtn.disabled = false;
+        // Update button text based on current state
+        updateOptimizeButtonText();
+    });
+}
+
+function updateOptimizeButtonText() {
+    const optimizeBtn = document.getElementById('optimizeBtn');
+    if (!optimizeBtn) return;
+    
+    // If optimizing, show stop button
+    if (window.isOptimizing) {
+        optimizeBtn.textContent = '🛑 Stop Optimizing';
+        return;
+    }
+    
+    // Otherwise, update based on selection
+    const checkboxes = document.querySelectorAll('input[name="databases"]:checked');
+    if (checkboxes.length > 0) {
+        optimizeBtn.textContent = `🔧 Optimize Selected (${checkboxes.length})`;
+    } else {
+        optimizeBtn.textContent = '🔧 Optimize All';
+    }
+}
+
+// Check optimization status periodically
+function checkOptimizeStatus() {
+    if (!window.isOptimizing) return;
+    
+    fetch('/api/optimize/status')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                if (!data.running && window.isOptimizing) {
+                    // Optimization completed
+                    window.isOptimizing = false;
+                    updateOptimizeButtonText();
+                    showToast('Optimization completed!', 'success');
+                }
+            }
+        })
+        .catch(error => {
+            // Silently fail - optimization might still be running
+            console.error('Error checking optimization status:', error);
+        });
+}
+
+// Start checking optimization status every 2 seconds when optimizing
+let optimizeStatusInterval = null;
+function startOptimizeStatusCheck() {
+    if (optimizeStatusInterval) {
+        clearInterval(optimizeStatusInterval);
+    }
+    optimizeStatusInterval = setInterval(checkOptimizeStatus, 2000);
+}
+
+function stopOptimizeStatusCheck() {
+    if (optimizeStatusInterval) {
+        clearInterval(optimizeStatusInterval);
+        optimizeStatusInterval = null;
+    }
 }
 
 window.jobGroupStates = new Map();
@@ -1193,6 +1401,17 @@ function updateButtonStates(enabled) {
             backupSelectedBtn.classList.add('disabled');
         } else {
             backupSelectedBtn.classList.remove('disabled');
+        }
+    }
+    
+    // Optimize button should be enabled when system is ready (doesn't require selection)
+    const optimizeBtn = document.getElementById('optimizeBtn');
+    if (optimizeBtn) {
+        optimizeBtn.disabled = !enabled;
+        if (!enabled) {
+            optimizeBtn.classList.add('disabled');
+        } else {
+            optimizeBtn.classList.remove('disabled');
         }
     }
     

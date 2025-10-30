@@ -147,6 +147,9 @@ func setupRoutes(config *Config) {
 	http.HandleFunc("/api/databases", requireValidTests(requireAuth(handleGetDatabases)))
 	http.HandleFunc("/api/backup/start", requireValidTests(requireAuth(handleStartBackup)))
 	http.HandleFunc("/api/backup/stop", requireAuth(handleStopBackups))
+	http.HandleFunc("/api/optimize/start", requireValidTests(requireAuth(handleStartOptimize)))
+	http.HandleFunc("/api/optimize/stop", requireAuth(handleStopOptimize))
+	http.HandleFunc("/api/optimize/status", requireAuth(handleOptimizeStatus))
 	http.HandleFunc("/api/backup/running", requireAuth(handleGetRunningJobs))
 	http.HandleFunc("/api/backup/recent-activity", requireAuth(handleGetRecentActivity))
 	http.HandleFunc("/api/backup/jobs", requireAuth(handleGetBackupJobs))
@@ -2047,6 +2050,197 @@ func handleStartBackup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleStartOptimize handles the optimize request from web UI
+func handleStartOptimize(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse request body
+	var requestData struct {
+		Databases []string `json:"databases"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request format: " + err.Error(),
+		})
+		return
+	}
+
+	// Validate request
+	if len(requestData.Databases) == 0 {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "No databases specified for optimization",
+		})
+		return
+	}
+
+	// Load config
+	config, err := loadConfig("config.json")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Failed to load config: " + err.Error(),
+		})
+		return
+	}
+
+	LogInfo("Optimize request received - Databases: %v", requestData.Databases)
+
+	// Reset global abort flag when starting new optimization
+	ResetGlobalOptimizeAbort()
+
+	// Start optimization in background
+	go optimizeDatabases(config, requestData.Databases)
+
+	// Return success response immediately
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Optimization started for %d database(s)", len(requestData.Databases)),
+		"count":   len(requestData.Databases),
+	})
+}
+
+// optimizeDatabases optimizes multiple databases using parallel processing
+func optimizeDatabases(config *Config, databases []string) {
+	// Mark optimization as running
+	globalOptimizeRunningMutex.Lock()
+	globalOptimizeRunning = true
+	globalOptimizeRunningMutex.Unlock()
+
+	totalDBs := len(databases)
+	LogInfo("🔧 [OPTIMIZE-START] Starting optimization for %d database(s)", totalDBs)
+
+	// Create process queue and active processes channel for parallel control
+	processQueue := make(chan string, totalDBs)
+	activeProcesses := make(chan struct{}, config.Backup.Parallel)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var completedCount int
+
+	// Fill process queue
+	for _, dbName := range databases {
+		processQueue <- dbName
+	}
+	close(processQueue)
+
+	// Start worker goroutines
+	LogInfo("👥 [OPTIMIZE-WORKERS] Starting %d worker goroutines for parallel optimization", config.Backup.Parallel)
+	for i := 0; i < config.Backup.Parallel; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for dbName := range processQueue {
+				// Check for global abort signal first
+				if CheckGlobalOptimizeAbort() {
+					LogWarn("⚠️ [OPTIMIZE-WORKER-%d] Optimization aborted due to global stop signal", workerID)
+					return
+				}
+
+				// Acquire process slot
+				activeProcesses <- struct{}{}
+
+				// Check again after acquiring slot (in case abort was signaled while waiting)
+				if CheckGlobalOptimizeAbort() {
+					LogWarn("⚠️ [OPTIMIZE-WORKER-%d] Optimization aborted before starting %s", workerID, dbName)
+					<-activeProcesses
+					return
+				}
+
+				LogInfo("🔧 [OPTIMIZE-WORKER-%d] Starting optimization for database: %s", workerID, dbName)
+
+				// Build and execute optimize command
+				cmd := buildOptimizeCommand(dbName, config)
+
+				// Execute command
+				output, err := cmd.CombinedOutput()
+
+				// Update completed count
+				mu.Lock()
+				completedCount++
+				current := completedCount
+				mu.Unlock()
+
+				if err != nil {
+					LogError("❌ [OPTIMIZE-WORKER-%d] Failed to optimize database %s (running %d/%d): %v, Output: %s",
+						workerID, dbName, current, totalDBs, err, string(output))
+				} else {
+					LogInfo("✅ [OPTIMIZE-WORKER-%d] Successfully optimized database %s (running %d/%d)",
+						workerID, dbName, current, totalDBs)
+				}
+
+				// Release process slot
+				<-activeProcesses
+			}
+		}(i)
+	}
+
+	// Wait for all workers to complete
+	wg.Wait()
+
+	// Mark optimization as not running
+	globalOptimizeRunningMutex.Lock()
+	globalOptimizeRunning = false
+	globalOptimizeRunningMutex.Unlock()
+
+	if CheckGlobalOptimizeAbort() {
+		LogInfo("🛑 [OPTIMIZE-ABORTED] Optimization was aborted by user")
+	} else {
+		LogInfo("🎉 [OPTIMIZE-COMPLETE] Optimization completed for all %d database(s)", totalDBs)
+	}
+}
+
+// handleOptimizeStatus returns the current optimization status
+func handleOptimizeStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	globalOptimizeRunningMutex.RLock()
+	isRunning := globalOptimizeRunning
+	globalOptimizeRunningMutex.RUnlock()
+
+	globalOptimizeAbortMutex.RLock()
+	isAborted := globalOptimizeAbortFlag
+	globalOptimizeAbortMutex.RUnlock()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"running": isRunning,
+		"aborted": isAborted,
+	})
+}
+
+// handleStopOptimize handles stopping all running optimization processes
+func handleStopOptimize(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	LogInfo("Stop optimization request received")
+
+	// Signal global abort to stop all optimization processes
+	SignalGlobalOptimizeAbort()
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Optimization stop signal sent",
+	})
+}
+
 // handleRetryBackup handles retrying failed databases for a completed backup job
 func handleRetryBackup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -2882,6 +3076,35 @@ func ResetGlobalBackupAbort() {
 	globalBackupAbortFlag = false
 	globalBackupAbortMutex.Unlock()
 	LogInfo("Global backup abort flag reset")
+}
+
+// Global abort mechanism for optimization processes
+var globalOptimizeAbortFlag bool
+var globalOptimizeAbortMutex sync.RWMutex
+var globalOptimizeRunning bool
+var globalOptimizeRunningMutex sync.RWMutex
+
+// SignalGlobalOptimizeAbort signals all optimization processes to abort
+func SignalGlobalOptimizeAbort() {
+	globalOptimizeAbortMutex.Lock()
+	globalOptimizeAbortFlag = true
+	globalOptimizeAbortMutex.Unlock()
+	LogInfo("Global optimization abort signal sent")
+}
+
+// CheckGlobalOptimizeAbort checks if global abort has been signaled for optimization
+func CheckGlobalOptimizeAbort() bool {
+	globalOptimizeAbortMutex.RLock()
+	defer globalOptimizeAbortMutex.RUnlock()
+	return globalOptimizeAbortFlag
+}
+
+// ResetGlobalOptimizeAbort resets the global abort flag (call this when starting new optimization)
+func ResetGlobalOptimizeAbort() {
+	globalOptimizeAbortMutex.Lock()
+	globalOptimizeAbortFlag = false
+	globalOptimizeAbortMutex.Unlock()
+	LogInfo("Global optimization abort flag reset")
 }
 
 // handleDetectBinary API endpoint to detect binary files automatically
