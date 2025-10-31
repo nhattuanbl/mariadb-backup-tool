@@ -599,6 +599,72 @@ function validateBinaryConfiguration() {
     });
 }
 
+// Check OS and enable/disable restart button
+function checkOSAndEnableRestart() {
+    const restartBtn = document.getElementById('restartService');
+    if (!restartBtn) {
+        return;
+    }
+
+    fetch('/api/system-info')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.os === 'linux') {
+                restartBtn.disabled = false;
+                restartBtn.title = 'Restart the mariadb-backup-tool service';
+            } else {
+                restartBtn.disabled = true;
+                restartBtn.title = 'Restart is only available on Linux systems';
+            }
+        })
+        .catch(error => {
+            console.error('Error checking OS:', error);
+            restartBtn.disabled = true;
+            restartBtn.title = 'Unable to determine OS';
+        });
+}
+
+// Restart service function
+function restartService() {
+    const btn = document.getElementById('restartService');
+    if (!btn) {
+        return;
+    }
+
+    // Store original text
+    const originalText = btn.textContent;
+
+    // Set loading state
+    btn.disabled = true;
+    btn.textContent = 'Restarting...';
+
+    fetch('/api/service/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast('Service restarted successfully!', 'success');
+        } else {
+            showToast('Failed to restart service: ' + (data.error || 'Unknown error'), 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Error restarting service:', error);
+        showToast('Error restarting service', 'error');
+    })
+    .finally(() => {
+        btn.disabled = false;
+        btn.textContent = originalText;
+        
+        // Re-check OS to ensure button state is correct
+        setTimeout(() => {
+            checkOSAndEnableRestart();
+        }, 1000);
+    });
+}
+
 // Setup event listeners when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
     // Binary detection button

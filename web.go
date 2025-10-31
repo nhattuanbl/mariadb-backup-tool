@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -144,6 +145,8 @@ func setupRoutes(config *Config) {
 	http.HandleFunc("/api/detect-binary", requireAuth(handleDetectBinary))
 	http.HandleFunc("/api/test-results", requireAuth(handleGetTestResults))
 	http.HandleFunc("/api/system-metrics", requireAuth(handleGetSystemMetrics))
+	http.HandleFunc("/api/system-info", requireAuth(handleGetSystemInfo))
+	http.HandleFunc("/api/service/restart", requireAuth(handleRestartService))
 	http.HandleFunc("/api/databases", requireValidTests(requireAuth(handleGetDatabases)))
 	http.HandleFunc("/api/backup/start", requireValidTests(requireAuth(handleStartBackup)))
 	http.HandleFunc("/api/backup/stop", requireAuth(handleStopBackups))
@@ -3338,5 +3341,59 @@ func handleGetBackupTimeline(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"data":    timelineData,
 		"days":    days,
+	})
+}
+
+// handleGetSystemInfo returns system information including OS
+func handleGetSystemInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"os":      runtime.GOOS,
+		"arch":    runtime.GOARCH,
+	})
+}
+
+// handleRestartService restarts the mariadb-backup-tool service (Linux only)
+func handleRestartService(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Only allow on Linux
+	if runtime.GOOS != "linux" {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Service restart is only available on Linux systems",
+		})
+		return
+	}
+
+	// Execute service restart command
+	cmd := exec.Command("service", "mariadb-backup-tool", "restart")
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		LogError("Failed to restart service: %v, output: %s", err, string(output))
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   fmt.Sprintf("Failed to restart service: %v", err),
+			"output":  string(output),
+		})
+		return
+	}
+
+	LogInfo("Service mariadb-backup-tool restarted successfully")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Service restarted successfully",
+		"output":  string(output),
 	})
 }
