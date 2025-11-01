@@ -641,19 +641,25 @@ func handleTestConnection(w http.ResponseWriter, r *http.Request) {
 
 // buildMySQLDSN builds MySQL connection string based on config
 func buildMySQLDSN(config *Config) (string, error) {
+	// Add connection parameters to handle large result sets
+	// maxAllowedPacket: 64MB, readTimeout: 60s, writeTimeout: 60s, timeout: 60s
+	params := "maxAllowedPacket=67108864&readTimeout=60s&writeTimeout=60s&timeout=60s&charset=utf8mb4&parseTime=true&loc=Local"
+	
 	if config.Database.Port > 0 && config.Database.Host != "" {
 		// Use TCP connection when port is specified and host is not empty
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
+		return fmt.Sprintf("%s:%s@tcp(%s:%d)/?%s",
 			config.Database.Username,
 			config.Database.Password,
 			config.Database.Host,
-			config.Database.Port), nil
+			config.Database.Port,
+			params), nil
 	} else if config.Database.Socket != "" {
 		// Use Unix socket when port is 0/blank or host is empty, and socket is specified
-		return fmt.Sprintf("%s:%s@unix(%s)/",
+		return fmt.Sprintf("%s:%s@unix(%s)/?%s",
 			config.Database.Username,
 			config.Database.Password,
-			config.Database.Socket), nil
+			config.Database.Socket,
+			params), nil
 	} else {
 		return "", fmt.Errorf("invalid database configuration: either host:port or socket must be specified")
 	}
@@ -857,9 +863,15 @@ func getDatabases(config *Config) ([]string, error) {
 	defer rows.Close()
 
 	var databases []string
+	var totalCount int
+	var systemCount int
+	var ignoredCount int
+	
 	for rows.Next() {
+		totalCount++
 		var dbName string
 		if err := rows.Scan(&dbName); err != nil {
+			LogWarn("Failed to scan database name: %v", err)
 			continue
 		}
 
@@ -868,6 +880,7 @@ func getDatabases(config *Config) ([]string, error) {
 			dbName == "performance_schema" ||
 			dbName == "mysql" ||
 			dbName == "sys" {
+			systemCount++
 			continue
 		}
 
@@ -876,6 +889,7 @@ func getDatabases(config *Config) ([]string, error) {
 		for _, ignoredDB := range config.Backup.IgnoreDbs {
 			if dbName == ignoredDB {
 				shouldIgnore = true
+				ignoredCount++
 				break
 			}
 		}
@@ -884,6 +898,15 @@ func getDatabases(config *Config) ([]string, error) {
 			databases = append(databases, dbName)
 		}
 	}
+	
+	// Check for errors from iterating over rows
+	if err := rows.Err(); err != nil {
+		LogError("Error iterating over database results: %v", err)
+		return nil, err
+	}
+
+	LogInfo("Retrieved %d databases from MySQL: total=%d, system=%d, ignored=%d, valid=%d",
+		len(databases), totalCount, systemCount, ignoredCount, len(databases))
 
 	return databases, nil
 }
@@ -2433,7 +2456,7 @@ func determineBackupType(dbName string, config *Config) string {
 	}
 
 	if latestBackup == "" {
-		LogInfo("No valid full backup timestamp found for %s - will do full backup", dbName)
+		LogDebug("No valid full backup timestamp found for %s - will do full backup", dbName)
 		return "full"
 	}
 
@@ -2444,12 +2467,12 @@ func determineBackupType(dbName string, config *Config) string {
 	cutoffTime := time.Now().AddDate(0, 0, -intervalDays)
 
 	if latestTime.Before(cutoffTime) {
-		LogInfo("Latest full backup for %s is %d days old (cutoff: %d days) - will do full backup",
+		LogDebug("Latest full backup for %s is %d days old (cutoff: %d days) - will do full backup",
 			dbName, int(time.Since(latestTime).Hours()/24), intervalDays)
 		return "full"
 	}
 
-	LogInfo("Latest full backup for %s is recent (%s) - file: %s - will do incremental backup",
+	LogDebug("Latest full backup for %s is recent (%s) - file: %s - will do incremental backup",
 		dbName, latestTime.Format("2006-01-02 15:04:05"), latestBackup)
 	return "incremental"
 }
